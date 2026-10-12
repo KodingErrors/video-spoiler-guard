@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Video Spoiler Guard</title>
+  <link rel="stylesheet" href="ui.css">
+</head>
+<body class="popup">
+  <header>
+    <img src="icons/icon32.png" alt="" width="20" height="20">
+    <h1>Video Spoiler Guard</h1>
+  </header>
+  <main>
+    <section id="here" aria-labelledby="here-host" hidden>
+      <div class="here-head">
+        <span class="host" id="here-host"></span>
+        <span class="pill" id="here-pill"></span>
+      </div>
+      <div class="segmented" role="radiogroup" aria-label="Guard videos on this site" id="here-choice">
+        <label><input type="radio" name="here" value="on" id="here-on"><span>On</span></label>
+        <label><input type="radio" name="here" value="off" id="here-off"><span>Off</span></label>
+        <label id="here-auto-wrap"><input type="radio" name="here" value="auto" id="here-auto"><span>Auto-detect</span></label>
+      </div>
+      <p class="hint" id="here-hint"></p>
+    </section>
+    <section id="here-unsupported" hidden>
+      <p class="hint">This page can't be guarded. Open a video site to change its setting.</p>
+    </section>
+
+    <section>
+      <label class="switch-row" for="auto-detect">
+        <span>
+          <strong>Auto-detect all video playbacks and automatically apply</strong>
+          <small>On sites not in the list below, the guard turns on as soon as a video plays, and a dialog lets you cancel it.</small>
+        </span>
+        <input type="checkbox" class="switch" id="auto-detect">
+      </label>
+    </section>
+
+    <section aria-labelledby="sites-title">
+      <h2 id="sites-title">Sites</h2>
+      <ul class="site-list" id="sites"></ul>
+      <form class="add" id="add-form" novalidate>
+        <input class="field" id="add-domain" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Add a site, e.g. example.com" aria-label="Site to add">
+        <button class="btn" type="submit">Add</button>
+      </form>
+      <p class="error" id="add-error" role="alert"></p>
+    </section>
+  </main>
+  <footer>
+    <small id="range"></small>
+    <button class="link" type="button" id="open-options">All settings</button>
+  </footer>
+  <script src="lib.js"></script>
+  <script src="storage.js"></script>
+  <script src="sites-ui.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

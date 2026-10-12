@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Video Spoiler Guard settings</title>
+  <link rel="stylesheet" href="ui.css">
+</head>
+<body class="options">
+  <div class="wrap">
+    <header class="page-head">
+      <img src="icons/icon48.png" alt="" width="36" height="36">
+      <div>
+        <h1>Video Spoiler Guard</h1>
+        <p class="hint">Adds a random amount of fake time to the length video players show, so you can't tell how close the end is.</p>
+      </div>
+    </header>
+
+    <section class="card" aria-labelledby="auto-title">
+      <h2 id="auto-title">Auto-detect</h2>
+      <label class="switch-row" for="auto-detect">
+        <span>
+          <strong>Auto-detect all video playbacks and automatically apply</strong>
+          <small>On any site that isn't in the list below, the guard turns on as soon as a video starts playing. A dialog then lets you cancel it for that video, or remember your choice for the site.</small>
+        </span>
+        <input type="checkbox" class="switch" id="auto-detect">
+      </label>
+      <div class="grid">
+        <label class="num" for="confirm-seconds">
+          <span>Dialog closes itself after (seconds)</span>
+          <input class="field" type="number" id="confirm-seconds" min="0" max="120" step="1">
+          <small>The guard stays on when it closes. 0 waits for a click.</small>
+        </label>
+        <label class="num" for="min-video-minutes">
+          <span>Ignore videos shorter than (minutes)</span>
+          <input class="field" type="number" id="min-video-minutes" min="0" max="600" step="0.5">
+          <small>Applies on every site. Skips ads, previews and clips.</small>
+        </label>
+      </div>
+      <label class="check" for="auto-hide-progress">
+        <input type="checkbox" id="auto-hide-progress">
+        Also hide progress bars on auto-detected sites (best effort)
+      </label>
+    </section>
+
+    <section class="card" aria-labelledby="time-title">
+      <h2 id="time-title">Fake time</h2>
+      <p class="hint">Each video gets its own random amount in this range, and keeps it every time you come back to it.</p>
+      <div class="grid">
+        <label class="num" for="min-hours">
+          <span>At least (hours)</span>
+          <input class="field" type="number" id="min-hours" min="0" max="48" step="0.5">
+        </label>
+        <label class="num" for="max-hours">
+          <span>At most (hours)</span>
+          <input class="field" type="number" id="max-hours" min="0" max="48" step="0.5">
+        </label>
+      </div>
+      <div class="actions">
+        <button class="btn secondary" type="button" id="reset-salt">Pick new fake lengths</button>
+        <span class="saved" id="time-status" role="status"></span>
+      </div>
+      <p class="error" id="time-error" role="alert"></p>
+    </section>
+
+    <section class="card" aria-labelledby="sites-title">
+      <h2 id="sites-title">Sites</h2>
+      <p class="hint">Sites that are on are guarded without a dialog. Sites that are off are never changed, even with auto-detect on. Each entry also covers its subdomains.</p>
+      <input class="field filter" type="search" id="filter" placeholder="Filter sites" aria-label="Filter sites">
+      <ul class="site-list" id="sites"></ul>
+      <p class="error" id="sites-error" role="alert"></p>
+    </section>
+
+    <section class="card" aria-labelledby="add-title">
+      <h2 id="add-title">Add a site</h2>
+      <form class="add-grid" id="add-form" novalidate>
+        <label for="add-domain">
+          Site address
+          <input class="field" id="add-domain" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="example.com or a link to a video page">
+        </label>
+        <details>
+          <summary>Advanced: CSS selectors</summary>
+          <div class="selectors">
+            <label for="add-duration">Duration label (optional; the length is usually found without it)
+              <input class="field" id="add-duration" type="text" spellcheck="false" placeholder=".player .time-total">
+            </label>
+            <label for="add-progress">Progress bar to hide (optional)
+              <input class="field" id="add-progress" type="text" spellcheck="false" placeholder=".player .seek-bar">
+            </label>
+          </div>
+        </details>
+        <div class="actions">
+          <button class="btn" type="submit">Add site</button>
+        </div>
+        <p class="error" id="add-error" role="alert"></p>
+      </form>
+    </section>
+
+    <section class="card" aria-labelledby="about-title">
+      <h2 id="about-title">What it can't hide</h2>
+      <ul class="hint">
+        <li>The position of the progress bar still reflects the real length unless you hide it.</li>
+        <li>Lengths printed on thumbnails, in search results and in chapter lists.</li>
+        <li>Players that draw their controls in a canvas or in the browser's built-in controls.</li>
+      </ul>
+    </section>
+  </div>
+  <script src="lib.js"></script>
+  <script src="storage.js"></script>
+  <script src="sites-ui.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>
