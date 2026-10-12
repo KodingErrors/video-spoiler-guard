@@ -21,7 +21,9 @@ function makeVideo(name, seconds) {
   return fs.readFileSync(file);
 }
 
+// long = 1:02:05, long2 = 1:23:20, short = 0:20
 const VIDEOS = { "long.webm": makeVideo("long.webm", 3725), "long2.webm": makeVideo("long2.webm", 5000), "short.webm": makeVideo("short.webm", 20) };
+const REAL = { long: "1:02:05", long2: "1:23:20" };
 
 // Shared page script: a tiny player that writes its own clock labels the way
 // real players do, from the <video> element's events.
@@ -35,44 +37,74 @@ const PLAYER_JS = `
       root.querySelectorAll('[data-total]').forEach((n) => (n.textContent = fmt(v.duration)));
       root.querySelectorAll('[data-combined]').forEach((n) => (n.textContent = fmt(v.currentTime) + ' / ' + fmt(v.duration)));
       root.querySelectorAll('[data-left]').forEach((n) => (n.textContent = '-' + fmt(v.duration - v.currentTime)));
+      root.querySelectorAll('[data-left-unsigned]').forEach((n) => (n.textContent = fmt(v.duration - v.currentTime)));
       root.querySelectorAll('[role=slider]').forEach((n) => { n.setAttribute('aria-valuemax', Math.floor(v.duration)); n.setAttribute('aria-valuetext', fmt(v.currentTime) + ' of ' + fmt(v.duration)); });
     };
     ['loadedmetadata', 'durationchange', 'timeupdate'].forEach((e) => v.addEventListener(e, sync));
   }
+  // Records every value a label shows, to prove the real one never appears.
+  window.seen = [];
+  window.sample = (sel) => setInterval(() => { const n = document.querySelector(sel); if (n) window.seen.push(n.textContent); }, 15);
 `;
 
+const YT_PLAYER = (src) => `
+  <div id="movie_player" class="html5-video-player" style="width:640px;height:360px;position:relative">
+    <video src="${src}" muted autoplay style="width:640px;height:360px"></video>
+    <div class="ytp-chrome-bottom"><span class="ytp-time-current">0:00</span> / <span class="ytp-time-duration" data-total></span>
+      <div class="ytp-progress-bar-container" style="height:5px;background:red"></div></div>
+  </div>
+  <script>${PLAYER_JS}; wire(document.getElementById('movie_player'));</script>`;
+
 const PAGES = {
-  "https://www.youtube.com/watch?v=abcDEF12345": `
-    <div id="movie_player" class="html5-video-player" style="width:640px;height:360px;position:relative">
-      <video src="/vsg/long.webm" muted autoplay style="width:640px;height:360px"></video>
-      <div class="ytp-chrome-bottom"><span class="ytp-time-current">0:00</span> / <span class="ytp-time-duration" data-total></span>
-        <div class="ytp-progress-bar-container" style="height:5px;background:red"></div></div>
-    </div>
-    <script>${PLAYER_JS}; wire(document.getElementById('movie_player'));
-      window.navigateTo = (id, src) => { history.pushState({}, '', '/watch?v=' + id); document.querySelector('video').src = src; };
-    </script>`,
-  "https://www.youtube.com/watch?v=shortVID001": `
-    <div class="html5-video-player" id="p" style="width:640px;height:360px"><video src="/vsg/short.webm" muted autoplay style="width:640px;height:360px"></video>
-      <span class="ytp-time-duration" data-total></span></div>
-    <script>${PLAYER_JS}; wire(document.getElementById('p'));</script>`,
+  "https://www.youtube.com/watch?v=abcDEF12345": YT_PLAYER("/vsg/long.webm") + `
+    <script>window.navigateTo = (id, src) => { history.pushState({}, '', '/watch?v=' + id); document.querySelector('video').src = src; };
+      window.reloadSource = () => { const v = document.querySelector('video'); sample('.ytp-time-duration'); v.src = '/vsg/long.webm?again=1'; };</script>`,
+  "https://www.youtube.com/embed/abcDEF12345": YT_PLAYER("/vsg/long.webm"),
+  "https://www.youtube.com/watch?v=shortVID001": YT_PLAYER("/vsg/short.webm"),
+  // A player in an about:blank-style srcdoc frame on a YouTube page.
+  "https://www.youtube.com/srcdoc-test": `
+    <iframe id="f" style="width:700px;height:420px;border:0" srcdoc="<div id=p style='width:640px;height:390px'><video src='/vsg/long.webm' muted autoplay style='width:640px;height:360px'></video><span data-total></span></div><script>${PLAYER_JS.replace(/"/g, "&quot;")}; wire(document.getElementById('p'));</script>"></iframe>`,
+  "https://blog.example.com/post": `
+    <h1>Blog post</h1><iframe id="yt" src="https://www.youtube.com/embed/abcDEF12345" style="width:700px;height:420px;border:0"></iframe>`,
   "https://videos.example.org/watch/1": `
+    <div id="slot"></div>
     <div id="player" style="width:640px;height:400px">
       <video src="/vsg/long.webm" muted autoplay style="width:640px;height:360px;display:block"></video>
       <div class="controls"><span data-combined></span> <span data-left></span>
         <div role="slider" aria-label="Seek" style="height:6px;background:blue"></div></div>
     </div>
     <p>Article text mentioning 1:02:05 outside the player must stay.</p>
-    <script>${PLAYER_JS}; wire(document.getElementById('player'));</script>`,
+    <script>${PLAYER_JS}; wire(document.getElementById('player'));
+      window.prependVideo = () => { document.getElementById('slot').innerHTML = '<div style="width:640px;height:360px"><video src="/vsg/long2.webm" muted autoplay style="width:640px;height:360px"></video></div>'; };
+    </script>`,
+  // Video.js prints time left as "-" in one span and the clock in the next.
+  "https://vjs.example.net/v": `
+    <div id="vjs" class="video-js" style="width:640px;height:400px">
+      <video src="/vsg/long.webm" muted autoplay style="width:640px;height:360px"></video>
+      <div class="vjs-control-bar"><div class="vjs-remaining-time"><span class="vjs-control-text">Remaining Time </span><span aria-hidden="true">-</span><span class="vjs-remaining-time-display" data-left-unsigned></span></div></div>
+    </div>
+    <script>${PLAYER_JS}; wire(document.getElementById('vjs'));</script>`,
+  // A custom site whose length label starts as a "0:00" placeholder.
+  "https://late.example.net/v": `
+    <div id="p" style="width:640px;height:400px">
+      <video src="/vsg/long.webm" muted autoplay style="width:640px;height:360px"></video>
+      <span class="dur">0:00</span>
+    </div>
+    <script>${PLAYER_JS}; window.fill = () => { document.querySelector('.dur').textContent = fmt(document.querySelector('video').duration); };</script>`,
   "https://shadow.example.net/v": `
     <fancy-player></fancy-player><closed-player></closed-player>
     <script>${PLAYER_JS};
       const markup = '<div style="width:640px;height:390px"><video src="/vsg/long.webm" muted autoplay style="width:640px;height:360px"></video><span data-total></span></div>';
       customElements.define('fancy-player', class extends HTMLElement { connectedCallback() { const r = this.attachShadow({ mode: 'open' }); r.innerHTML = markup; wire(r); } });
-      customElements.define('closed-player', class extends HTMLElement { connectedCallback() { const r = this.attachShadow({ mode: 'closed' }); r.innerHTML = markup.replace('long.webm', 'long2.webm'); wire(r); window.closedRoot = r; } });
+      customElements.define('closed-player', class extends HTMLElement { connectedCallback() { const r = this.attachShadow({ mode: 'closed' }); r.innerHTML = markup; wire(r); window.closedRoot = r; } });
     </script>`,
 };
 
-const parseClock = (text) => text.trim().split(":").map(Number).reduce((a, n) => a * 60 + n, 0);
+const parseClock = (text) => text.trim().replace(/^[-−]/, "").split(":").map(Number).reduce((a, n) => a * 60 + n, 0);
+const isFake = (text, real) => {
+  const shown = parseClock(text);
+  return shown >= real + 7200 && shown <= real + 21600;
+};
 
 async function main() {
   const context = await chromium.launchPersistentContext(path.join(TMP, "profile"), {
@@ -99,144 +131,215 @@ async function main() {
       await fn();
       results.push(["PASS", name]);
     } catch (err) {
-      results.push(["FAIL", name, err.message]);
+      results.push(["FAIL", name, err.message.split("\n").slice(0, 3).join(" ")]);
     }
   };
   const optionsPage = await context.newPage();
   await optionsPage.goto(`chrome-extension://${extId}/options.html`);
   const setStorage = (items) => optionsPage.evaluate((i) => chrome.storage.sync.set(i), items);
+  const removeStorage = (keys) => optionsPage.evaluate((k) => chrome.storage.sync.remove(k), keys);
   const getStorage = () => optionsPage.evaluate(() => chrome.storage.sync.get(null));
+  const prompt = (page) => page.locator("video-spoiler-guard-prompt");
+  const waitPrompt = (page) => page.waitForSelector("video-spoiler-guard-prompt", { state: "attached", timeout: 6000 });
+  const waitNoPrompt = (page) => page.waitForSelector("video-spoiler-guard-prompt", { state: "detached", timeout: 4000 });
+  // Focus starts on the dialog itself: Tab reaches Remember, then Cancel, then Keep.
+  const clickCancel = async (page) => {
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Enter");
+  };
+  const ready = (page, sel) => page.waitForFunction((s) => (document.querySelector(s) || {}).textContent, sel, { timeout: 10000 });
 
-  // 1. Built-in site: guarded silently, length grows by 2-6 hours.
+  // ---- 1. A listed site (YouTube) ----
   const yt = await context.newPage();
   await yt.goto("https://www.youtube.com/watch?v=abcDEF12345");
   await check("YouTube: duration label shows real length + 2-6 h", async () => {
-    await yt.waitForFunction(() => document.querySelector(".ytp-time-duration").textContent.length > 0);
+    await ready(yt, ".ytp-time-duration");
     await yt.waitForTimeout(300);
-    const shown = parseClock(await yt.textContent(".ytp-time-duration"));
-    assert.ok(shown >= 3725 + 7200 && shown <= 3725 + 21600, `shown ${shown}`);
+    assert.ok(isFake(await yt.textContent(".ytp-time-duration"), 3725), await yt.textContent(".ytp-time-duration"));
   });
-  await check("YouTube: no dialog on a listed site", async () => {
-    assert.equal(await yt.locator("video-spoiler-guard-prompt").count(), 0);
+  await check("YouTube: the dialog appears on a listed site while auto-detect is on", async () => {
+    await waitPrompt(yt);
+    await yt.keyboard.press("Escape");
+    await waitNoPrompt(yt);
+    assert.ok(isFake(await yt.textContent(".ytp-time-duration"), 3725), "Escape keeps the guard");
   });
   const firstShown = await yt.textContent(".ytp-time-duration");
   await check("YouTube: same video keeps the same fake length after reload", async () => {
     await yt.reload();
-    await yt.waitForFunction(() => document.querySelector(".ytp-time-duration").textContent.length > 0);
+    await ready(yt, ".ytp-time-duration");
     await yt.waitForTimeout(300);
     assert.equal(await yt.textContent(".ytp-time-duration"), firstShown);
+  });
+  await check("YouTube: Remember + Keep stops the dialog on that site", async () => {
+    await waitPrompt(yt);
+    await yt.keyboard.press("Tab"); // Remember
+    await yt.keyboard.press("Space");
+    await yt.keyboard.press("Tab");
+    await yt.keyboard.press("Tab"); // Keep
+    await yt.keyboard.press("Enter");
+    await yt.waitForTimeout(300);
+    assert.equal((await getStorage())["builtin:youtube"]?.ask, false);
+    await yt.reload();
+    await ready(yt, ".ytp-time-duration");
+    await yt.waitForTimeout(1800);
+    assert.equal(await prompt(yt).count(), 0);
+    assert.ok(isFake(await yt.textContent(".ytp-time-duration"), 3725));
+  });
+  await check("YouTube: reloading the source never flashes the real length", async () => {
+    await yt.evaluate(() => window.reloadSource());
+    await yt.waitForTimeout(1500);
+    const seen = await yt.evaluate(() => window.seen);
+    assert.ok(seen.length > 20, `sampled ${seen.length}`);
+    assert.ok(!seen.includes(REAL.long), `real length appeared: ${[...new Set(seen)].join(", ")}`);
   });
   await check("YouTube: SPA navigation to another video re-guards with the new length", async () => {
     await yt.evaluate(() => window.navigateTo("zzzZZZ99999", "/vsg/long2.webm"));
     await yt.waitForFunction(() => document.querySelector("video").duration > 4000);
     await yt.waitForTimeout(400);
-    const shown = parseClock(await yt.textContent(".ytp-time-duration"));
-    assert.ok(shown >= 5000 + 7200 && shown <= 5000 + 21600, `shown ${shown}`);
+    assert.ok(isFake(await yt.textContent(".ytp-time-duration"), 5000), await yt.textContent(".ytp-time-duration"));
   });
-  await check("YouTube: hide progress bar option", async () => {
-    await setStorage({ "builtin:youtube": { enabled: true, hideProgress: true } });
+  await check("YouTube: hide progress bar on, then off again", async () => {
+    await setStorage({ "builtin:youtube": { enabled: true, ask: false, hideProgress: true } });
     await yt.waitForTimeout(400);
-    assert.equal(await yt.evaluate(() => getComputedStyle(document.querySelector(".ytp-progress-bar-container")).opacity), "0");
+    const opacity = () => yt.evaluate(() => getComputedStyle(document.querySelector(".ytp-progress-bar-container")).opacity);
+    assert.equal(await opacity(), "0");
+    await setStorage({ "builtin:youtube": { enabled: true, ask: false, hideProgress: false } });
+    await yt.waitForTimeout(400);
+    assert.equal(await opacity(), "1");
   });
   await check("YouTube: switching the site off restores the real length", async () => {
-    await setStorage({ "builtin:youtube": { enabled: false, hideProgress: true } });
+    await setStorage({ "builtin:youtube": { enabled: false, ask: false } });
     await yt.waitForTimeout(400);
-    assert.equal(await yt.textContent(".ytp-time-duration"), "1:23:20");
-    assert.equal(await yt.evaluate(() => getComputedStyle(document.querySelector(".ytp-progress-bar-container")).opacity), "1");
-    await setStorage({ "builtin:youtube": { enabled: true, hideProgress: false } });
+    assert.equal(await yt.textContent(".ytp-time-duration"), REAL.long2);
+    await setStorage({ "builtin:youtube": { enabled: true, ask: false } });
     await yt.waitForTimeout(400);
-    assert.notEqual(await yt.textContent(".ytp-time-duration"), "1:23:20");
+    assert.notEqual(await yt.textContent(".ytp-time-duration"), REAL.long2);
   });
 
-  // 2. Short videos are left alone.
+  // ---- 2. Short videos ----
   const ytShort = await context.newPage();
   await ytShort.goto("https://www.youtube.com/watch?v=shortVID001");
   await check("Short video (20 s) is not changed", async () => {
-    await ytShort.waitForFunction(() => document.querySelector(".ytp-time-duration").textContent.length > 0);
+    await ready(ytShort, ".ytp-time-duration");
     await ytShort.waitForTimeout(400);
     assert.equal(await ytShort.textContent(".ytp-time-duration"), "0:20");
   });
   await ytShort.close();
 
-  // 3. Unlisted site with auto-detect: guarded, dialog shown, Cancel restores.
+  // ---- 3. Frames ----
+  await check("A page switched off covers the YouTube embed inside it", async () => {
+    await setStorage({ "site:blog.example.com": { enabled: false } });
+    const blog = await context.newPage();
+    await blog.goto("https://blog.example.com/post");
+    const frame = blog.frameLocator("#yt");
+    await blog.waitForTimeout(2000);
+    assert.equal(await frame.locator(".ytp-time-duration").textContent(), REAL.long);
+    await removeStorage("site:blog.example.com");
+    await blog.waitForTimeout(800);
+    assert.ok(isFake(await frame.locator(".ytp-time-duration").textContent(), 3725), "guarded again once the page is back to default");
+    await blog.close();
+  });
+  await check("A srcdoc frame follows its page's setting", async () => {
+    await setStorage({ "builtin:youtube": { enabled: false, ask: false } });
+    const page = await context.newPage();
+    await page.goto("https://www.youtube.com/srcdoc-test");
+    await page.waitForTimeout(2000);
+    assert.equal(await page.frameLocator("#f").locator("[data-total]").textContent(), REAL.long);
+    await setStorage({ "builtin:youtube": { enabled: true, ask: false } });
+    await page.waitForTimeout(800);
+    assert.ok(isFake(await page.frameLocator("#f").locator("[data-total]").textContent(), 3725));
+    await page.close();
+  });
+
+  // ---- 4. Unlisted site with auto-detect ----
   const generic = await context.newPage();
   await generic.goto("https://videos.example.org/watch/1");
   await check("Auto-detect: combined and remaining clocks rewritten, outside text untouched", async () => {
-    await generic.waitForFunction(() => document.querySelector("[data-combined]").textContent.length > 0);
+    await ready(generic, "[data-combined]");
     await generic.waitForTimeout(400);
     const combined = await generic.textContent("[data-combined]");
-    const total = parseClock(combined.split("/")[1]);
-    assert.ok(total >= 3725 + 7200 && total <= 3725 + 21600, combined);
+    assert.ok(isFake(combined.split("/")[1], 3725), combined);
     const left = await generic.textContent("[data-left]");
-    assert.ok(parseClock(left.slice(1)) > 7000, left);
+    assert.ok(parseClock(left) > 7000, left);
     assert.match(await generic.textContent("p"), /1:02:05/);
     const valuetext = await generic.getAttribute("[role=slider]", "aria-valuetext");
     assert.ok(!/\b1:02:05\b/.test(valuetext), valuetext);
   });
-  await check("Auto-detect: dialog appears when playback is detected", async () => {
-    await generic.waitForSelector("video-spoiler-guard-prompt", { state: "attached", timeout: 5000 });
-  });
-  await check("Auto-detect: Cancel in the dialog restores the real length", async () => {
-    await generic.keyboard.press("Shift+Tab"); // from "Keep hidden" to "Cancel"
-    await generic.keyboard.press("Enter");
-    await generic.waitForSelector("video-spoiler-guard-prompt", { state: "detached", timeout: 3000 });
+  await check("Auto-detect: dialog appears; Cancel restores the real length", async () => {
+    await waitPrompt(generic);
+    await clickCancel(generic);
+    await waitNoPrompt(generic);
     await generic.waitForTimeout(300);
-    const combined = await generic.textContent("[data-combined]");
-    assert.match(combined, /\/ 1:02:05$/);
+    assert.match(await generic.textContent("[data-combined]"), /\/ 1:02:05$/);
   });
-
-  // 4. Dialog: Escape keeps it; "Remember" adds the site.
-  await check("Auto-detect: Escape keeps the guard, Remember + Keep adds the site as on", async () => {
-    await generic.reload();
-    await generic.waitForSelector("video-spoiler-guard-prompt", { state: "attached", timeout: 5000 });
-    await generic.keyboard.press("Escape");
-    await generic.waitForSelector("video-spoiler-guard-prompt", { state: "detached", timeout: 3000 });
-    const combined = await generic.textContent("[data-combined]");
-    assert.ok(!/\/ 1:02:05$/.test(combined), combined);
-
+  await check("Auto-detect: a video added above a cancelled one doesn't undo Cancel", async () => {
+    await generic.evaluate(() => window.prependVideo());
+    await generic.waitForTimeout(2500);
+    assert.match(await generic.textContent("[data-combined]"), /\/ 1:02:05$/, "the cancelled video stays real");
+  });
+  await check("Auto-detect: Remember + Cancel switches the site off", async () => {
     await setStorage({ confirmSeconds: 0 });
     await generic.reload();
-    await generic.waitForSelector("video-spoiler-guard-prompt", { state: "attached", timeout: 5000 });
-    await generic.keyboard.press("Shift+Tab");
-    await generic.keyboard.press("Shift+Tab"); // the Remember checkbox
+    await waitPrompt(generic);
+    await generic.keyboard.press("Tab"); // Remember
     await generic.keyboard.press("Space");
-    await generic.keyboard.press("Tab");
-    await generic.keyboard.press("Tab"); // Keep hidden
+    await generic.keyboard.press("Tab"); // Cancel
     await generic.keyboard.press("Enter");
     await generic.waitForTimeout(400);
-    const stored = await getStorage();
-    assert.equal(stored["site:videos.example.org"]?.enabled, true, JSON.stringify(stored));
-  });
-  await check("A remembered site is guarded without a dialog", async () => {
+    assert.equal((await getStorage())["site:videos.example.org"]?.enabled, false);
     await generic.reload();
-    await generic.waitForFunction(() => document.querySelector("[data-combined]").textContent.length > 0);
+    await ready(generic, "[data-combined]");
     await generic.waitForTimeout(1500);
-    assert.equal(await generic.locator("video-spoiler-guard-prompt").count(), 0);
-    assert.ok(!/\/ 1:02:05$/.test(await generic.textContent("[data-combined]")));
+    assert.equal(await prompt(generic).count(), 0);
+    assert.match(await generic.textContent("[data-combined]"), /\/ 1:02:05$/);
+    await removeStorage("site:videos.example.org");
+    await setStorage({ confirmSeconds: 10 });
   });
   await check("Turning auto-detect off leaves unlisted sites alone", async () => {
-    await setStorage({ autoDetect: false, "site:videos.example.org": null });
-    await optionsPage.evaluate(() => chrome.storage.sync.remove("site:videos.example.org"));
+    await setStorage({ autoDetect: false });
     await generic.reload();
-    await generic.waitForFunction(() => document.querySelector("[data-combined]").textContent.length > 0);
+    await ready(generic, "[data-combined]");
     await generic.waitForTimeout(1200);
     assert.match(await generic.textContent("[data-combined]"), /\/ 1:02:05$/);
-    assert.equal(await generic.locator("video-spoiler-guard-prompt").count(), 0);
+    assert.equal(await prompt(generic).count(), 0);
     await setStorage({ autoDetect: true });
   });
 
-  // 5. Players inside open and closed shadow roots.
-  const shadow = await context.newPage();
-  await shadow.goto("https://shadow.example.net/v");
-  await check("Shadow DOM: open and closed shadow-root players are guarded", async () => {
-    await shadow.waitForTimeout(2500);
-    const open = await shadow.evaluate(() => document.querySelector("fancy-player").shadowRoot.querySelector("[data-total]").textContent);
-    const closed = await shadow.evaluate(() => window.closedRoot.querySelector("[data-total]").textContent);
-    assert.ok(parseClock(open) >= 3725 + 7200, `open: ${open}`);
-    assert.ok(parseClock(closed) >= 5000 + 7200, `closed: ${closed}`);
+  // ---- 5. Player shapes ----
+  await check("Video.js-style split remaining time is rewritten", async () => {
+    const page = await context.newPage();
+    await page.goto("https://vjs.example.net/v");
+    await ready(page, "[data-left-unsigned]");
+    await page.waitForTimeout(500);
+    assert.ok(parseClock(await page.textContent("[data-left-unsigned]")) > 7000, await page.textContent("[data-left-unsigned]"));
+    await page.close();
+  });
+  await check("A '0:00' placeholder in a site's label is never offset", async () => {
+    await setStorage({ "site:late.example.net": { enabled: true, ask: false, durationSelector: ".dur" } });
+    const page = await context.newPage();
+    await page.goto("https://late.example.net/v");
+    await page.waitForFunction(() => document.querySelector("video").duration > 0);
+    await page.waitForTimeout(1500);
+    assert.equal(await page.textContent(".dur"), "0:00");
+    await page.evaluate(() => window.fill());
+    await page.waitForTimeout(100);
+    assert.ok(isFake(await page.textContent(".dur"), 3725), await page.textContent(".dur"));
+    await removeStorage("site:late.example.net");
+    await page.close();
+  });
+  await check("Shadow DOM: open and closed players are guarded, each with its own length", async () => {
+    const page = await context.newPage();
+    await page.goto("https://shadow.example.net/v");
+    await page.waitForTimeout(2500);
+    const open = await page.evaluate(() => document.querySelector("fancy-player").shadowRoot.querySelector("[data-total]").textContent);
+    const closed = await page.evaluate(() => window.closedRoot.querySelector("[data-total]").textContent);
+    assert.ok(isFake(open, 3725), `open: ${open}`);
+    assert.ok(isFake(closed, 3725), `closed: ${closed}`);
+    await page.close();
   });
 
-  // 6. Popup and options pages render and add sites.
+  // ---- 6. Popup and options ----
   await check("Popup lists built-in sites and adds a site", async () => {
     const popup = await context.newPage();
     await popup.goto(`chrome-extension://${extId}/popup.html`);
@@ -251,15 +354,35 @@ async function main() {
     assert.match(await popup.textContent("#add-error"), /example\.com/);
     await popup.close();
   });
-  await check("Options page toggles and removes an added site", async () => {
+  await check("Popup keeps keyboard focus on a switch after toggling it", async () => {
+    const popup = await context.newPage();
+    await popup.goto(`chrome-extension://${extId}/popup.html`);
+    await popup.focus("#site-builtin-twitch");
+    await popup.keyboard.press("Space");
+    await popup.waitForTimeout(300);
+    assert.equal(await popup.evaluate(() => document.activeElement.id), "site-builtin-twitch");
+    await popup.keyboard.press("Space");
+    await popup.close();
+  });
+  await check("Options page toggles, asks and removes an added site", async () => {
     await optionsPage.reload();
     const row = optionsPage.locator('#sites li[data-key="site:some-video-site.com"]');
     await row.locator(".switch").click();
-    await optionsPage.waitForTimeout(200);
-    assert.equal((await getStorage())["site:some-video-site.com"].enabled, false);
+    await row.locator('input[id^="ask-"]').click();
+    await optionsPage.waitForTimeout(300);
+    const stored = (await getStorage())["site:some-video-site.com"];
+    assert.equal(stored.enabled, false);
+    assert.equal(stored.ask, false);
     await row.locator(".icon-btn").click();
-    await optionsPage.waitForTimeout(200);
+    await optionsPage.waitForTimeout(300);
     assert.equal((await getStorage())["site:some-video-site.com"], undefined);
+  });
+  await check("Options page saves a number once, after the last change", async () => {
+    await optionsPage.focus("#min-video-minutes");
+    for (let i = 0; i < 6; i++) await optionsPage.keyboard.press("ArrowUp");
+    await optionsPage.waitForTimeout(800);
+    assert.equal((await getStorage()).minVideoMinutes, 4);
+    await setStorage({ minVideoMinutes: 1 });
   });
 
   await context.close();

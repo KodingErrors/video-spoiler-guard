@@ -100,7 +100,7 @@ test("normalizeSettings reads per-site keys and skips bad ones", () => {
     "site:not a site": { enabled: true },
     "site:broken.example": "nope",
   });
-  assert.deepEqual(s.builtins.twitch, { enabled: false, hideProgress: true });
+  assert.deepEqual(s.builtins.twitch, { enabled: false, ask: true, hideProgress: true });
   assert.equal(s.customSites.length, 1);
   assert.equal(s.customSites[0].domain, "example.com");
   assert.equal(s.customSites[0].enabled, false);
@@ -135,7 +135,13 @@ test("videoKey finds the video id per site and ignores tracking params", () => {
   assert.equal(VSG.videoKey("twitch", loc("https://clips.twitch.tv/FancyClipSlug")), "twitch:cFancyClipSlug");
   assert.equal(VSG.videoKey("vimeo", loc("https://player.vimeo.com/video/76979871?h=abc")), "vimeo:76979871");
   assert.equal(VSG.videoKey("", loc("https://www.example.org/watch/42/?utm_source=x&id=7&t=10")), "example.org/watch/42?id=7");
-  assert.equal(VSG.videoKey("", loc("https://example.org/a"), 2), "example.org/a#2");
+  assert.equal(VSG.videoKey("", loc("https://example.org/a"), "len:3725"), "example.org/a@len:3725", "media tells apart videos on one page");
+  assert.equal(VSG.videoKey("youtube", loc("https://www.youtube.com/watch?v=abcDEF12345"), "len:3725"), "youtube:abcDEF12345", "a site id ignores media");
+  assert.equal(VSG.videoKey("netflix", loc("https://www.netflix.com/watch/81678254?trackId=1")), "netflix:81678254");
+  assert.equal(VSG.videoKey("bilibili", loc("https://www.bilibili.com/video/BV1xx411c7mD/?p=2&spm_id_from=a")), "bilibili:BV1xx411c7mDp2");
+  assert.equal(VSG.videoKey("x", loc("https://x.com/someone/status/1790000000000000000/video/1")), "x:1790000000000000000");
+  assert.equal(VSG.videoKey("vimeo", loc("https://vimeo.com/showcase/11223344/video/987654321")), "vimeo:987654321");
+  assert.equal(VSG.videoKey("reddit", loc("https://www.reddit.com/")), "reddit.com", "a feed falls back to the page");
 });
 
 test("offsetSeconds is stable per video, inside the range, and changes with the salt", () => {
@@ -176,4 +182,28 @@ test("rewriteLastClock adds the offset to the label's last clock", () => {
   assert.equal(VSG.rewriteLastClock("Live", 7200), null);
   assert.equal(VSG.hasClock("Live"), false);
   assert.equal(VSG.hasClock("0:19"), true);
+});
+
+
+test("built-in sites start on and asking, and decide passes the ask option through", () => {
+  const s = VSG.normalizeSettings({ "builtin:youtube": { ask: false } });
+  assert.equal(VSG.decide(s, "www.youtube.com").site.ask, false);
+  assert.equal(VSG.decide(s, "www.twitch.tv").site.ask, true);
+  assert.equal(VSG.decide(s, "example.org").site.ask, true);
+  const c = VSG.normalizeSettings({ "site:example.org": { enabled: true, ask: false } });
+  assert.equal(VSG.decide(c, "video.example.org").site.ask, false);
+  assert.ok(!VSG.BUILTIN_SITES.some((b) => b.id === "disneyplus"), "Disney+ reports no length, so it isn't offered");
+});
+
+test("en-dash remaining time and four-digit minute clocks", () => {
+  assert.equal(VSG.rewriteClockText("\u201350:00", { duration: 3725, offset: 7200, currentTime: 725 }), "\u20132:50:00");
+  assert.deepEqual(VSG.parseClock("1260:00"), { sign: "", value: 75600, style: "tm" });
+  assert.equal(VSG.rewriteLastClock("1260:00", 3600), "1320:00");
+});
+
+test("lastClock finds the last clock and where it is", () => {
+  const c = VSG.lastClock("0:05 / 1:00:00");
+  assert.equal(c.value, 3600);
+  assert.equal(c.index, 7);
+  assert.equal(VSG.lastClock("LIVE"), null);
 });

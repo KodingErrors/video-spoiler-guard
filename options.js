@@ -1,37 +1,65 @@
-// Options page: every setting, the full site list with per-site progress-bar
-// hiding and selectors, and the add-a-site form.
+// Options page: every setting, the full site list with per-site dialog and
+// progress-bar options and selectors, and the add-a-site form.
 (async function () {
   "use strict";
 
   const VSG = globalThis.VSG;
   const Store = globalThis.VSGStore;
-  const { el, siteRow, addSite, reportError } = globalThis.VSGUI;
+  const { el, siteRow, addSite, reportError, rerenderList, slug } = globalThis.VSGUI;
   const $ = (id) => document.getElementById(id);
 
   let settings = await Store.loadSettings();
 
   // ---- Numbers ---------------------------------------------------------
 
+  // Number fields save a moment after the last change (or on leaving the
+  // field), and only when the value changed: every spinner click fires
+  // "change", and Chrome allows 120 sync writes a minute.
+  function debounced(save, wait = 500) {
+    let timer = 0;
+    const run = () => {
+      clearTimeout(timer);
+      timer = 0;
+      save();
+    };
+    return {
+      schedule: () => {
+        clearTimeout(timer);
+        timer = setTimeout(run, wait);
+      },
+      flush: () => {
+        if (timer) run();
+      },
+    };
+  }
+
   function bindNumber(id, key, limits, errorId) {
     const input = $(id);
-    input.addEventListener("change", () => {
-      const error = $(errorId);
-      if (error) error.textContent = "";
+    const error = $(errorId);
+    const saver = debounced(() => {
+      error.textContent = "";
       const value = Number(input.value);
       if (input.value.trim() === "" || !Number.isFinite(value) || value < limits[0] || value > limits[1]) {
-        if (error) error.textContent = `Enter a number from ${limits[0]} to ${limits[1]}.`;
+        error.textContent = `Enter a number from ${limits[0]} to ${limits[1]}.`;
         input.value = settings[key];
         return;
       }
-      Store.setGlobal({ [key]: value }).catch((err) => reportError(error, err));
+      if (value === settings[key]) return;
+      Store.setGlobal({ [key]: value }).catch((err) => {
+        reportError(error, err);
+        input.value = settings[key];
+      });
     });
+    input.addEventListener("change", saver.schedule);
+    input.addEventListener("blur", saver.flush);
   }
 
-  bindNumber("confirm-seconds", "confirmSeconds", VSG.LIMITS.confirmSeconds, "sites-error");
-  bindNumber("min-video-minutes", "minVideoMinutes", VSG.LIMITS.minVideoMinutes, "sites-error");
+  bindNumber("confirm-seconds", "confirmSeconds", VSG.LIMITS.confirmSeconds, "auto-error");
+  bindNumber("min-video-minutes", "minVideoMinutes", VSG.LIMITS.minVideoMinutes, "auto-error");
 
   // The two ends of the range are saved together so min never exceeds max.
-  function saveRange(changed) {
+  let changedEnd = "min";
+  const rangeSaver = debounced(() => {
     const error = $("time-error");
     error.textContent = "";
     let min = Number($("min-hours").value);
@@ -43,7 +71,7 @@
       return;
     }
     if (min > max) {
-      if (changed === "min") max = min;
+      if (changedEnd === "min") max = min;
       else min = max;
     }
     if (max === 0) {
@@ -51,10 +79,19 @@
       renderNumbers();
       return;
     }
-    Store.setGlobal({ minHours: min, maxHours: max }).catch((err) => reportError(error, err));
+    if (min === settings.minHours && max === settings.maxHours) return;
+    Store.setGlobal({ minHours: min, maxHours: max }).catch((err) => {
+      reportError(error, err);
+      renderNumbers();
+    });
+  });
+  for (const [id, end] of [["min-hours", "min"], ["max-hours", "max"]]) {
+    $(id).addEventListener("change", () => {
+      changedEnd = end;
+      rangeSaver.schedule();
+    });
+    $(id).addEventListener("blur", rangeSaver.flush);
   }
-  $("min-hours").addEventListener("change", () => saveRange("min"));
-  $("max-hours").addEventListener("change", () => saveRange("max"));
 
   $("reset-salt").addEventListener("click", async () => {
     await Store.resetSalt();
@@ -66,32 +103,34 @@
   // ---- Switches --------------------------------------------------------
 
   $("auto-detect").addEventListener("change", (e) => {
-    Store.setGlobal({ autoDetect: e.target.checked }).catch((err) => reportError($("sites-error"), err));
+    Store.setGlobal({ autoDetect: e.target.checked }).catch((err) => reportError($("auto-error"), err));
   });
   $("auto-hide-progress").addEventListener("change", (e) => {
-    Store.setGlobal({ autoHideProgress: e.target.checked }).catch((err) => reportError($("sites-error"), err));
+    Store.setGlobal({ autoHideProgress: e.target.checked }).catch((err) => reportError($("auto-error"), err));
   });
 
   // ---- Site list -------------------------------------------------------
 
+  function checkbox(id, checked, label, onchange) {
+    return el("label", { class: "check", for: id }, el("input", { type: "checkbox", id, checked, onchange }), label);
+  }
+
   function siteExtras(site) {
     const errorTarget = $("sites-error");
-    const hideId = `hide-${site.key.replace(/[^a-z0-9]+/gi, "-")}`;
-    const hide = el(
-      "label",
-      { class: "check", for: hideId },
-      el("input", {
-        type: "checkbox",
-        id: hideId,
-        checked: site.hideProgress,
-        onchange: (e) => Store.setSiteHideProgress(site, e.target.checked).catch((err) => reportError(errorTarget, err)),
-      }),
-      site.progressSelector ? "Hide the progress bar" : "Hide the progress bar (best effort)",
+    const key = slug(site);
+    const ask = checkbox(`ask-${key}`, site.ask !== false, "Show the dialog when a video starts (with auto-detect on)", (e) =>
+      Store.setSiteAsk(site, e.target.checked).catch((err) => reportError(errorTarget, err)),
     );
-    if (site.builtIn) return el("div", { class: "site-extra" }, hide);
+    const hide = checkbox(
+      `hide-${key}`,
+      site.hideProgress,
+      site.progressSelector ? "Hide the progress bar" : "Hide the progress bar (best effort)",
+      (e) => Store.setSiteHideProgress(site, e.target.checked).catch((err) => reportError(errorTarget, err)),
+    );
+    if (site.builtIn) return el("div", { class: "site-extra" }, ask, hide);
 
-    const selectorField = (label, key, value) => {
-      const id = `${key}-${site.key.replace(/[^a-z0-9]+/gi, "-")}`;
+    const selectorField = (label, field, value) => {
+      const id = `${field}-${key}`;
       return el(
         "label",
         { for: id },
@@ -109,15 +148,14 @@
               return;
             }
             errorTarget.textContent = "";
-            Store.setCustomSite(site.domains[0], { [key]: selector }).catch((err) => reportError(errorTarget, err));
+            Store.setCustomSite(site.domains[0], { [field]: selector }).catch((err) => reportError(errorTarget, err));
           },
         }),
       );
     };
-    const open = !!(site.durationSelector || site.progressSelector);
     const details = el(
       "details",
-      { open },
+      { open: !!(site.durationSelector || site.progressSelector) },
       el("summary", { text: "CSS selectors" }),
       el(
         "div",
@@ -126,7 +164,7 @@
         selectorField("Progress bar to hide", "progressSelector", site.progressSelector),
       ),
     );
-    return el("div", { class: "site-extra" }, hide, details);
+    return el("div", { class: "site-extra" }, ask, hide, details);
   }
 
   function validSelector(selector) {
@@ -144,18 +182,17 @@
       (s) => !query || s.name.toLowerCase().includes(query) || s.domains.some((d) => d.includes(query)),
     );
     const list = $("sites");
-    // Keep focus on the control being used when storage echoes the change.
-    const focusedId = document.activeElement && list.contains(document.activeElement) ? document.activeElement.id : null;
-    list.replaceChildren(...sites.map((site) => siteRow(site, { errorTarget: $("sites-error"), extra: siteExtras(site) })));
-    if (!sites.length) list.append(el("li", { class: "hint", text: "No sites match." }));
-    if (focusedId) $(focusedId)?.focus();
+    rerenderList(list, () => {
+      list.replaceChildren(...sites.map((site) => siteRow(site, { errorTarget: $("sites-error"), extra: siteExtras(site) })));
+      if (!sites.length) list.append(el("li", { class: "hint", text: "No sites match." }));
+    });
   }
 
   function renderNumbers() {
-    $("confirm-seconds").value = settings.confirmSeconds;
-    $("min-video-minutes").value = settings.minVideoMinutes;
-    $("min-hours").value = settings.minHours;
-    $("max-hours").value = settings.maxHours;
+    for (const [id, key] of [["confirm-seconds", "confirmSeconds"], ["min-video-minutes", "minVideoMinutes"], ["min-hours", "minHours"], ["max-hours", "maxHours"]]) {
+      // Don't overwrite a number the user is in the middle of typing.
+      if (document.activeElement !== $(id)) $(id).value = settings[key];
+    }
   }
 
   function render() {
@@ -187,9 +224,7 @@
       if (progressSelector) patch.progressSelector = progressSelector;
       const message = await addSite($("add-domain").value, settings, patch);
       error.textContent = message;
-      if (!message) {
-        $("add-form").reset();
-      }
+      if (!message) $("add-form").reset();
     } catch (err) {
       reportError(error, err);
     }

@@ -5,7 +5,7 @@
 
   const VSG = globalThis.VSG;
   const Store = globalThis.VSGStore;
-  const { siteRow, addSite, reportError, preserveScroll } = globalThis.VSGUI;
+  const { siteRow, addSite, reportError, rerenderList } = globalThis.VSGUI;
   const $ = (id) => document.getElementById(id);
 
   const errorBox = $("add-error");
@@ -28,12 +28,20 @@
     none: ["none", "Not guarded"],
   };
 
+  function asks(decision) {
+    if (!settings.autoDetect) return false;
+    return decision.mode === "auto" || (decision.mode === "on" && decision.site.ask !== false);
+  }
+
   function hintFor(decision) {
     const hours = VSG.describeHours(settings.minHours, settings.maxHours);
     switch (decision.mode) {
-      case "on": return `Videos here always show their length plus ${hours}. No dialog.`;
+      case "on":
+        return asks(decision)
+          ? `Videos here show their length plus ${hours}, and a dialog lets you cancel when one starts.`
+          : `Videos here always show their length plus ${hours}. No dialog.`;
       case "off": return "Videos here are never changed, even with auto-detect on.";
-      case "auto": return "Not in your list. When a video plays, the guard turns on and a dialog lets you cancel.";
+      case "auto": return "Not in your list, so auto-detect covers it: the guard turns on when a video plays, and a dialog lets you cancel.";
       default: return "Not in your list, and auto-detect is off, so videos here aren't changed.";
     }
   }
@@ -43,23 +51,30 @@
     $("here-unsupported").hidden = !!host;
     if (!host) return;
     const decision = VSG.decide(settings, host);
-    const site = decision.site && decision.site.id !== "auto" ? decision.site : null;
+    const site = decision.mode === "on" || decision.mode === "off" ? decision.site : null;
     const domain = VSG.normalizeDomain(host) || host;
-    $("here-host").textContent = site && site.builtIn ? `${site.name} (${domain})` : domain;
+    // Name the entry that applies, which may be a parent domain.
+    const entry = site ? (site.builtIn ? site.name : site.domains[0]) : null;
+    $("here-host").textContent = entry && entry !== domain ? `${entry} (${domain})` : domain;
     const [cls, text] = PILL[decision.mode];
     const pill = $("here-pill");
     pill.className = "pill " + cls;
     pill.textContent = text;
     $("here-hint").textContent = hintFor(decision);
-    // Built-in sites are always listed, so they are only on or off.
+    // Built-in sites are always listed, so they are only on or off. The third
+    // choice removes an added site, which hands it back to auto-detect.
     $("here-auto-wrap").hidden = !!(site && site.builtIn);
+    $("here-auto-label").textContent = settings.autoDetect ? "Default (ask)" : "Default (off)";
     const value = site ? (site.enabled ? "on" : "off") : "auto";
     for (const input of document.querySelectorAll('input[name="here"]')) input.checked = input.value === value;
+    // The dialog option only matters for a listed site that is on.
+    $("here-ask-row").hidden = !(site && site.enabled && settings.autoDetect);
+    $("here-ask").checked = !!(site && site.ask !== false);
   }
 
   function renderSites() {
     const list = $("sites");
-    preserveScroll(list, () => {
+    rerenderList(list, () => {
       list.replaceChildren(...VSG.resolveSites(settings).map((site) => siteRow(site, { errorTarget: errorBox })));
     });
   }
@@ -80,6 +95,11 @@
     else if (site) write = Store.setSiteEnabled(site, choice === "on");
     else write = Store.setCustomSite(host, { enabled: choice === "on" });
     write.catch((err) => reportError(errorBox, err));
+  });
+
+  $("here-ask").addEventListener("change", (e) => {
+    const site = host && VSG.findSite(VSG.resolveSites(settings), host);
+    if (site) Store.setSiteAsk(site, e.target.checked).catch((err) => reportError(errorBox, err));
   });
 
   $("auto-detect").addEventListener("change", (e) => {

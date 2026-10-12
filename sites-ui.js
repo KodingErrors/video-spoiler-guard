@@ -30,14 +30,14 @@
     target.textContent = error && error.message ? error.message : "That change couldn't be saved. Try again.";
   }
 
-  function idFor(site) {
-    return "site-" + site.key.replace(/[^a-z0-9]+/gi, "-");
+  function slug(site) {
+    return site.key.replace(/[^a-z0-9]+/gi, "-");
   }
 
   // One row of the site list: name, domains and an on/off switch, plus a
   // remove button for sites the user added.
   function siteRow(site, { errorTarget, extra } = {}) {
-    const inputId = idFor(site);
+    const inputId = "site-" + slug(site);
     const toggle = el("input", {
       type: "checkbox",
       class: "switch",
@@ -53,6 +53,7 @@
       : el("button", {
           type: "button",
           class: "icon-btn",
+          id: "remove-" + slug(site),
           "aria-label": `Remove ${site.name}`,
           title: `Remove ${site.name}`,
           text: "×",
@@ -78,12 +79,34 @@
     return "";
   }
 
-  // Keeps an element's scroll position across a re-render.
-  function preserveScroll(node, render) {
-    const top = node ? node.scrollTop : 0;
-    render();
-    if (node) node.scrollTop = top;
+  // Re-renders a site list in place while keeping what the user was doing:
+  // the focused control, which "details" panels are open, and the scroll
+  // position. When the focused row went away (a site was removed), focus
+  // moves to the row that took its place.
+  function rerenderList(list, build) {
+    const active = document.activeElement;
+    const inList = active && list.contains(active);
+    const focusedId = inList ? active.id : null;
+    const rows = [...list.querySelectorAll("li[data-key]")];
+    const focusedRow = inList ? rows.findIndex((li) => li.contains(active)) : -1;
+    const open = new Set(rows.filter((li) => li.querySelector("details[open]")).map((li) => li.dataset.key));
+    const top = list.scrollTop;
+    build();
+    for (const li of list.querySelectorAll("li[data-key]")) {
+      const details = li.querySelector("details");
+      if (details && open.has(li.dataset.key)) details.open = true;
+    }
+    list.scrollTop = top;
+    if (!inList) return;
+    const again = focusedId && document.getElementById(focusedId);
+    if (again) {
+      again.focus();
+      return;
+    }
+    const next = list.querySelectorAll("li[data-key]")[Math.max(0, focusedRow)] || list.querySelector("li[data-key]:last-child");
+    const target = next && next.querySelector(".switch");
+    if (target) target.focus();
   }
 
-  root.VSGUI = Object.freeze({ el, siteRow, addSite, reportError, preserveScroll });
+  root.VSGUI = Object.freeze({ el, siteRow, addSite, reportError, rerenderList, slug });
 })(globalThis);

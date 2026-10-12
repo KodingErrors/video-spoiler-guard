@@ -111,6 +111,9 @@ button { cursor: pointer; }
 .site-domains { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .badge-custom { font-size: 11px; font-weight: 600; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; margin-left: 6px; }
 
+.check-row { display: inline-flex; gap: 8px; align-items: center; font-size: 13px; cursor: pointer; }
+.check-row input { margin: 0; accent-color: var(--accent); }
+
 .add { display: flex; gap: 8px; }
 .add .field { flex: 1; }
 .error { color: var(--danger); font-size: 12.5px; min-height: 1em; }

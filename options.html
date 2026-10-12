@@ -21,26 +21,27 @@
       <label class="switch-row" for="auto-detect">
         <span>
           <strong>Auto-detect all video playbacks and automatically apply</strong>
-          <small>On any site that isn't in the list below, the guard turns on as soon as a video starts playing. A dialog then lets you cancel it for that video, or remember your choice for the site.</small>
+          <small>Guards every video that starts playing on any site that isn't switched off below, and shows a dialog where you can cancel it for that video or remember your choice for the site. When this is off, only the sites switched on below are guarded, and no dialog appears.</small>
         </span>
         <input type="checkbox" class="switch" id="auto-detect">
       </label>
       <div class="grid">
         <label class="num" for="confirm-seconds">
           <span>Dialog closes itself after (seconds)</span>
-          <input class="field" type="number" id="confirm-seconds" min="0" max="120" step="1">
+          <input class="field" type="number" id="confirm-seconds" min="0" max="120" step="1" aria-describedby="auto-error">
           <small>The guard stays on when it closes. 0 waits for a click.</small>
         </label>
         <label class="num" for="min-video-minutes">
           <span>Ignore videos shorter than (minutes)</span>
-          <input class="field" type="number" id="min-video-minutes" min="0" max="600" step="0.5">
+          <input class="field" type="number" id="min-video-minutes" min="0" max="600" step="0.5" aria-describedby="auto-error">
           <small>Applies on every site. Skips ads, previews and clips.</small>
         </label>
       </div>
       <label class="check" for="auto-hide-progress">
         <input type="checkbox" id="auto-hide-progress">
-        Also hide progress bars on auto-detected sites (best effort)
+        Also hide progress bars on sites that aren't in the list (best effort)
       </label>
+      <p class="error" id="auto-error" role="alert"></p>
     </section>
 
     <section class="card" aria-labelledby="time-title">
@@ -65,7 +66,7 @@
 
     <section class="card" aria-labelledby="sites-title">
       <h2 id="sites-title">Sites</h2>
-      <p class="hint">Sites that are on are guarded without a dialog. Sites that are off are never changed, even with auto-detect on. Each entry also covers its subdomains.</p>
+      <p class="hint">Sites that are on are always guarded; with auto-detect on, they also show the dialog unless you untick it for that site. Sites that are off are never changed. Each entry also covers its subdomains.</p>
       <input class="field filter" type="search" id="filter" placeholder="Filter sites" aria-label="Filter sites">
       <ul class="site-list" id="sites"></ul>
       <p class="error" id="sites-error" role="alert"></p>
@@ -102,6 +103,7 @@
         <li>The position of the progress bar still reflects the real length unless you hide it.</li>
         <li>Lengths printed on thumbnails, in search results and in chapter lists.</li>
         <li>Players that draw their controls in a canvas or in the browser's built-in controls.</li>
+        <li>Disney+: its player doesn't report the video's length to the page, so there is nothing to work from.</li>
       </ul>
     </section>
   </div>

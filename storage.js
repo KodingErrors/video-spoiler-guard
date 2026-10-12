@@ -50,6 +50,11 @@
     return site.builtIn ? setBuiltin(site.id, { hideProgress }) : setCustomSite(site.domains[0], { hideProgress });
   }
 
+  // Whether the dialog is shown on this site while auto-detect is on.
+  function setSiteAsk(site, ask) {
+    return site.builtIn ? setBuiltin(site.id, { ask }) : setCustomSite(site.domains[0], { ask });
+  }
+
   async function getSalt() {
     const { salt } = await local().get("salt");
     if (typeof salt === "string" && salt) return salt;
@@ -70,6 +75,7 @@
     removeCustomSite,
     setSiteEnabled,
     setSiteHideProgress,
+    setSiteAsk,
     getSalt,
     resetSalt,
   });

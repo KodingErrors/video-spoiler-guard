@@ -9,7 +9,7 @@
   // ---- Settings -----------------------------------------------------------
 
   const DEFAULTS = Object.freeze({
-    autoDetect: true,        // guard videos on sites that are not in the list, after asking
+    autoDetect: true,        // guard every playback on sites not switched off, with a dialog to cancel
     minHours: 2,             // smallest amount of fake time added
     maxHours: 6,             // largest amount of fake time added
     minVideoMinutes: 1,      // shorter videos are left alone (ads, previews, clips)
@@ -25,11 +25,14 @@
 
   // Built-in sites. Every site also gets the generic text matcher, so the
   // selectors only need to cover what that matcher cannot find on its own.
+  // Selector sources: extension and userscript code maintained in 2025-2026
+  // (SponsorBlock, FrankerFaceZ add-ons, Teleparty, PreMiD and others).
   //   playerSelector    closest ancestor of the <video> that holds its controls
-  //   durationSelector  element whose text is the total length
+  //   durationSelector  the player's own length label (see labelKind)
+  //   labelKind         "total", or "remaining" when the label counts down
   //   progressSelector  seek bar to make invisible when "Hide progress bar" is on
-  //   adSelector        matches while an ad plays in the same <video> element
-  //   remainingUnsigned the player shows time left without a leading minus sign
+  //   adSelector        present (and visible) while an ad plays
+  //   remainingUnsigned the player shows time left without a minus sign
   const site = (id, name, domains, extra = {}) =>
     Object.freeze({
       id,
@@ -38,6 +41,7 @@
       defaultEnabled: true,
       playerSelector: "",
       durationSelector: "",
+      labelKind: "total",
       progressSelector: "",
       adSelector: "",
       remainingUnsigned: false,
@@ -61,22 +65,79 @@
       progressSelector: '[data-a-target="player-seekbar"], [data-test-selector="vod-seekbar-preview-overlay-wrapper"], .vod-seekbar-preview-overlay__wrapper',
       adSelector: '[data-a-target="video-ad-label"], [data-a-target="video-ad-countdown"]',
     }),
-    site("kick", "Kick", ["kick.com"]),
-    site("vimeo", "Vimeo", ["vimeo.com"]),
-    site("dailymotion", "Dailymotion", ["dailymotion.com", "dai.ly"]),
+    site("kick", "Kick", ["kick.com"], {
+      playerSelector: "#injected-embedded-channel-player-video",
+      progressSelector: '[class*="group/seekbar"]',
+    }),
+    site("vimeo", "Vimeo", ["vimeo.com"], {
+      progressSelector: ".vp-progress[data-progress-bar]",
+      adSelector: ".vp-ads-wrapper .vp-ads-tag:not(.hidden)",
+    }),
+    site("dailymotion", "Dailymotion", ["dailymotion.com", "dai.ly"], {
+      playerSelector: ".dmp_Player",
+      durationSelector: ".np_TimerContent-duration",
+      progressSelector: ".np_ProgressBar--video",
+      adSelector: ".np_ProgressBar--ad, .np_TimerAd, .np_ButtonAdSkip",
+    }),
     site("rumble", "Rumble", ["rumble.com"]),
-    site("netflix", "Netflix", ["netflix.com"], { remainingUnsigned: true }),
-    site("primevideo", "Prime Video", ["primevideo.com"]),
-    site("disneyplus", "Disney+", ["disneyplus.com"]),
-    site("max", "Max", ["max.com", "hbomax.com"]),
-    site("hulu", "Hulu", ["hulu.com"]),
-    site("crunchyroll", "Crunchyroll", ["crunchyroll.com"]),
-    site("paramountplus", "Paramount+", ["paramountplus.com"]),
+    // Netflix shows only the time left, with no sign.
+    site("netflix", "Netflix", ["netflix.com"], {
+      durationSelector: '[data-uia="controls-time-remaining"]',
+      labelKind: "remaining",
+      remainingUnsigned: true,
+      progressSelector: '[data-uia="timeline"]',
+      adSelector: '[data-uia="ads-info-container"]',
+    }),
+    // Prime Video's clock reads "elapsed / remaining".
+    site("primevideo", "Prime Video", ["primevideo.com", "amazon.com", "amazon.co.uk", "amazon.de", "amazon.co.jp", "amazon.ca", "amazon.com.au", "amazon.in", "amazon.fr", "amazon.it", "amazon.es"], {
+      playerSelector: '[id^="dv-web-player"]',
+      durationSelector: ".atvwebplayersdk-timeindicator-text",
+      labelKind: "remaining",
+      remainingUnsigned: true,
+      progressSelector: '.atvwebplayersdk-seekbar-container, div:has(> input[type="range"][aria-label="Seek"]), .atvwebplayersdk-trickplay-container',
+      adSelector: ".atvwebplayersdk-ad-timer-remaining-time, .atvwebplayersdk-ad-timer, .atvwebplayersdk-adtimeindicator-text",
+    }),
+    // Max shows "-1:51:58" (time left).
+    site("max", "HBO Max", ["hbomax.com", "max.com"], {
+      durationSelector: '[data-testid="player-ux-scrubber-timestamp"]',
+      labelKind: "remaining",
+      progressSelector: 'div:has(> [data-testid="player-ux-scrubber-position"]), [data-testid="player-ux-scrubber-track"]',
+      adSelector: '[class*="AdOverlayContainer"]',
+    }),
+    site("hulu", "Hulu", ["hulu.com"], {
+      durationSelector: ".Timeline__remainingTimestamp",
+      labelKind: "remaining",
+      progressSelector: ".Timeline__sliderContainer",
+      adSelector: ".AdUnitView__adBarContainer",
+    }),
+    site("crunchyroll", "Crunchyroll", ["crunchyroll.com"], {
+      durationSelector: '[data-testid="timestamp"]',
+      progressSelector: '[data-testid="timeline-controls-container"]',
+    }),
+    site("paramountplus", "Paramount+", ["paramountplus.com"], {
+      durationSelector: ".aa-player-skin .controls-duration",
+      progressSelector: ".aa-player-skin .seek-bar",
+      adSelector: ".ad-info-manager.show",
+    }),
     site("peacock", "Peacock", ["peacocktv.com"]),
-    site("facebook", "Facebook", ["facebook.com"]),
-    site("x", "X (Twitter)", ["x.com", "twitter.com"]),
-    site("reddit", "Reddit", ["reddit.com"]),
-    site("bilibili", "Bilibili", ["bilibili.com"]),
+    site("facebook", "Facebook", ["facebook.com"], {
+      progressSelector: '[data-instancekey^="id-vpuid"] div[role="slider"][aria-orientation="horizontal"]',
+    }),
+    // X shows "0:15 / 1:32" in the control bar and a bare time-left badge.
+    site("x", "X (Twitter)", ["x.com", "twitter.com"], {
+      remainingUnsigned: true,
+      progressSelector: '[data-testid="scrubber"]',
+    }),
+    site("reddit", "Reddit", ["reddit.com", "redditmedia.com"], {
+      progressSelector: "shreddit-progress-bar",
+    }),
+    site("tiktok", "TikTok", ["tiktok.com"], {
+      progressSelector: '[class*="DivVideoProgressContainer"] > [class*="DivProgressBar"], [class*="DivSeekBarContainer"]',
+    }),
+    site("bilibili", "Bilibili", ["bilibili.com"], {
+      durationSelector: ".bpx-player-ctrl-time-duration",
+      progressSelector: ".bpx-player-progress-wrap, .bpx-player-shadow-progress-area, .bpx-player-mini-progress",
+    }),
   ]);
 
   function clampNumber(value, [min, max], fallback) {
@@ -98,8 +159,9 @@
   // Settings live in chrome.storage.sync as flat keys so no single item gets
   // near the 8 KB per-item quota:
   //   autoDetect, minHours, maxHours, minVideoMinutes, confirmSeconds, autoHideProgress
-  //   "builtin:<id>" -> { enabled, hideProgress }
-  //   "site:<domain>" -> { enabled, hideProgress, durationSelector, progressSelector, addedAt }
+  //   "builtin:<id>" -> { enabled, ask, hideProgress }
+  //   "site:<domain>" -> { enabled, ask, hideProgress, durationSelector, progressSelector, addedAt }
+  // "ask" means the dialog is shown on that site while auto-detect is on.
   function normalizeSettings(raw) {
     raw = raw && typeof raw === "object" ? raw : {};
     let minHours = clampNumber(raw.minHours, LIMITS.hours, DEFAULTS.minHours);
@@ -111,6 +173,7 @@
       const o = raw["builtin:" + site.id] || {};
       builtins[site.id] = {
         enabled: bool(o.enabled, site.defaultEnabled !== false),
+        ask: bool(o.ask, true),
         hideProgress: bool(o.hideProgress, false),
       };
     }
@@ -124,6 +187,7 @@
       customSites.push({
         domain,
         enabled: bool(o.enabled, true),
+        ask: bool(o.ask, true),
         hideProgress: bool(o.hideProgress, false),
         durationSelector: cleanSelector(o.durationSelector),
         progressSelector: cleanSelector(o.progressSelector),
@@ -151,6 +215,7 @@
       builtIn: true,
       key: "builtin:" + site.id,
       enabled: settings.builtins[site.id].enabled,
+      ask: settings.builtins[site.id].ask,
       hideProgress: settings.builtins[site.id].hideProgress,
     }));
     const custom = settings.customSites.map((c) => ({
@@ -160,9 +225,11 @@
       domains: [c.domain],
       builtIn: false,
       enabled: c.enabled,
+      ask: c.ask,
       hideProgress: c.hideProgress,
       playerSelector: "",
       durationSelector: c.durationSelector,
+      labelKind: "total",
       progressSelector: c.progressSelector,
       adSelector: "",
       remainingUnsigned: false,
@@ -227,11 +294,14 @@
     durationSelector: "",
     progressSelector: "",
     adSelector: "",
+    labelKind: "total",
     remainingUnsigned: false,
+    ask: true,
   });
 
   // What the content script should do on this host:
-  //   on   - listed and switched on: guard silently
+  //   on   - listed and switched on: guard (with the dialog when auto-detect
+  //          is on and the site's "ask" option is on)
   //   off  - listed and switched off: never touch the page
   //   auto - not listed, auto-detect on: guard, then ask in a dialog
   //   none - not listed, auto-detect off: do nothing
@@ -316,14 +386,14 @@
 
     const tokens = [];
     for (const clock of totals.keys()) tokens.push(clock);
-    for (const clock of remaining.keys()) tokens.push("-" + clock, "\u2212" + clock);
+    for (const clock of remaining.keys()) tokens.push("-" + clock, "\u2212" + clock, "\u2013" + clock);
     if (remainingUnsigned) for (const clock of remaining.keys()) tokens.push(clock);
     tokens.sort((a, b) => b.length - a.length);
 
     const pattern = new RegExp(`(?<![\\d:.])(?:${tokens.map(escapeRegExp).join("|")})(?![\\d:])`, "g");
     let changed = false;
     const result = text.replace(pattern, (match) => {
-      const sign = match[0] === "-" || match[0] === "\u2212" ? match[0] : "";
+      const sign = SIGNS.includes(match[0]) ? match[0] : "";
       const clock = sign ? match.slice(1) : match;
       const info = sign ? remaining.get(clock) : totals.get(clock) || remaining.get(clock);
       if (!info) return match;
@@ -333,7 +403,8 @@
     return changed ? result : null;
   }
 
-  const CLOCK_TOKEN = /(?<![\d:.])([-−]?)(?:(\d{1,3}):)?(\d{1,3}):(\d{2})(?![\d:])/g;
+  const SIGNS = ["-", "\u2212", "\u2013"]; // hyphen, minus sign, en dash
+  const CLOCK_TOKEN = /(?<![\d:.])([-\u2212\u2013]?)(?:(\d{1,3}):)?(\d{1,4}):(\d{2})(?![\d:])/g;
 
   // Reads one clock token ("1:02:05", "01:02:05", "62:05", "-12:34") into
   // its value in seconds and the style it was written in.
@@ -356,20 +427,28 @@
     return { sign, value, style };
   }
 
-  // For an element the site is known to use as its duration label: adds the
-  // offset to the LAST clock in the text, whatever value it shows. Used when
-  // <video>.duration and the label disagree (YouTube's server-side ads make
-  // the media longer than the video). Returns null when there is no clock.
-  function rewriteLastClock(text, offset) {
-    if (typeof text !== "string" || !(offset > 0)) return null;
+  // The last clock in the text, parsed, with its position.
+  function lastClock(text) {
+    if (typeof text !== "string") return null;
     let last = null;
     CLOCK_TOKEN.lastIndex = 0;
     for (let m = CLOCK_TOKEN.exec(text); m; m = CLOCK_TOKEN.exec(text)) last = { index: m.index, token: m[0] };
     if (!last) return null;
     const clock = parseClock(last.token);
+    return clock ? { ...clock, index: last.index, token: last.token } : null;
+  }
+
+  // For an element the site is known to use as its length label: adds the
+  // offset to the LAST clock in the text. Used when <video>.duration and the
+  // label disagree (server-side ads make the media longer than the video).
+  // The content script checks that the clock is plausible before calling
+  // this. Returns null when there is no clock.
+  function rewriteLastClock(text, offset) {
+    if (!(offset > 0)) return null;
+    const clock = lastClock(text);
     if (!clock) return null;
     const fake = clock.sign + formatClock(clock.value + offset, clock.style);
-    return text.slice(0, last.index) + fake + text.slice(last.index + last.token.length);
+    return text.slice(0, clock.index) + fake + text.slice(clock.index + clock.token.length);
   }
 
   function hasClock(text) {
@@ -389,53 +468,54 @@
 
   // ---- Per-video identity and offset -------------------------------------
 
-  const TRACKING_PARAMS = /^(utm_.*|t|time|start|si|feature|fbclid|gclid|ref|ref_src|ab_channel|pp|list|index|autoplay|muted|mute)$/i;
+  // Query parameters that say where a link came from, not which video it is.
+  const TRACKING_PARAMS = /^(utm_.*|t|time|start|si|feature|fbclid|gclid|dclid|msclkid|ref|ref_src|ref_url|ab_channel|pp|autoplay|muted|mute|spm_id_from|vd_source|share_id|share_source|s|mibextid|igsh|igshid|mc_.*)$/i;
+
+  // Per-site video ids, read from the page's address.
+  const SITE_IDS = {
+    youtube: (path, params) => (path === "/watch" ? params.get("v") : (path.match(/^\/(?:embed|shorts|live|v|e)\/([\w-]{6,})/) || [])[1]),
+    twitch: (path, params, host) => {
+      const vod = path.match(/^\/videos\/(\d+)/) || (params.get("video") || "").match(/^v?(\d+)$/);
+      if (vod) return "v" + vod[1];
+      const clip = path.match(/\/clip\/([\w-]+)/) || (host.startsWith("clips.") && path.match(/^\/([\w-]+)/)) || (params.get("clip") || "").match(/^([\w-]+)$/);
+      return clip ? "c" + clip[1] : null;
+    },
+    vimeo: (path) => (path.match(/\/video\/(\d{5,})/) || path.match(/(?:^|\/)(\d{5,})(?=\/[0-9a-f]+\/?$|\/?$)/) || [])[1],
+    dailymotion: (path, params) => (path.match(/\/video\/([a-z0-9]+)/i) || (params.get("video") || "").match(/^([a-z0-9]+)$/i) || [])[1],
+    kick: (path) => (path.match(/\/videos?\/([0-9a-f-]{8,})/i) || [])[1],
+    rumble: (path) => (path.match(/^\/(v[a-z0-9]+)-/i) || path.match(/^\/embed\/(v[a-z0-9]+)/i) || [])[1],
+    netflix: (path) => (path.match(/^\/watch\/(\d+)/) || [])[1],
+    max: (path) => (path.match(/\/video\/watch\/([^/?#]+(?:\/[^/?#]+)?)/) || [])[1],
+    hulu: (path) => (path.match(/^\/watch\/([a-z0-9-]{8,})/i) || [])[1],
+    crunchyroll: (path) => (path.match(/\/watch\/([a-z0-9]+)/i) || [])[1],
+    paramountplus: (path) => (path.match(/\/(?:shows|movies)\/video\/([\w-]+)/) || [])[1],
+    peacock: (path) => (path.match(/\/watch\/playback\/vod\/[^/]+\/([0-9a-f-]{36})/i) || [])[1],
+    facebook: (path, params) => params.get("v") || (path.match(/\/(?:videos|reel)\/(?:[^/]+\/)?(\d{6,})/) || [])[1],
+    x: (path) => (path.match(/\/status\/(\d+)/) || [])[1],
+    reddit: (path) => (path.match(/\/comments\/([a-z0-9]+)/i) || [])[1],
+    tiktok: (path) => (path.match(/\/(?:video|embed(?:\/v2)?|player\/v1)\/(\d{8,})/) || [])[1],
+    bilibili: (path, params) => {
+      const m = path.match(/\/video\/(BV\w+|av\d+)/i) || path.match(/\/bangumi\/play\/((?:ep|ss)\d+)/i);
+      return m ? m[1] + (params.get("p") ? "p" + params.get("p") : "") : null;
+    },
+  };
 
   // A stable id for the video playing at this location, so it always gets
-  // the same fake length. `loc` is { hostname, pathname, search }.
-  function videoKey(siteId, loc, index = 0) {
+  // the same fake length. `loc` is { hostname, pathname, search }. On sites
+  // whose addresses name the video, that id is the key. Elsewhere the key is
+  // the page address plus `media`, which tells apart videos that share a page
+  // (the media file, or failing that its length).
+  function videoKey(siteId, loc, media = "") {
     const host = String(loc.hostname || "").toLowerCase().replace(/^www\./, "");
     const path = loc.pathname || "/";
     const params = new URLSearchParams(loc.search || "");
-    let id = null;
-    switch (siteId) {
-      case "youtube": {
-        const m = path.match(/^\/(?:embed|shorts|live|v|e)\/([\w-]{6,})/);
-        id = path === "/watch" ? params.get("v") : m && m[1];
-        if (id) id = "youtube:" + id;
-        break;
-      }
-      case "twitch": {
-        const vod = path.match(/^\/videos\/(\d+)/) || (params.get("video") || "").match(/^v?(\d+)$/);
-        const clip = path.match(/\/clip\/([\w-]+)/) || (host.startsWith("clips.") && path.match(/^\/([\w-]+)/)) || (params.get("clip") || "").match(/^([\w-]+)$/);
-        if (vod) id = "twitch:v" + vod[1];
-        else if (clip) id = "twitch:c" + clip[1];
-        break;
-      }
-      case "vimeo": {
-        const m = path.match(/(?:^|\/)(\d{5,})(?:\/|$)/);
-        if (m) id = "vimeo:" + m[1];
-        break;
-      }
-      case "dailymotion": {
-        const m = path.match(/\/video\/([a-z0-9]+)/i) || (params.get("video") || "").match(/^([a-z0-9]+)$/i);
-        if (m) id = "dailymotion:" + m[1];
-        break;
-      }
-      case "kick": {
-        const m = path.match(/\/videos?\/([0-9a-f-]{8,})/i);
-        if (m) id = "kick:" + m[1];
-        break;
-      }
-      default:
-        break;
-    }
-    if (!id) {
-      const kept = [...params.entries()].filter(([k]) => !TRACKING_PARAMS.test(k)).sort(([a], [b]) => a.localeCompare(b));
-      const query = kept.length ? "?" + new URLSearchParams(kept).toString() : "";
-      id = host + path.replace(/\/+$/, "") + query;
-    }
-    return index > 0 ? `${id}#${index}` : id;
+    const read = SITE_IDS[siteId];
+    const id = read ? read(path, params, host) : null;
+    if (id) return `${siteId}:${id}`;
+    const kept = [...params.entries()].filter(([k]) => !TRACKING_PARAMS.test(k)).sort(([a], [b]) => a.localeCompare(b));
+    const query = kept.length ? "?" + new URLSearchParams(kept).toString() : "";
+    const page = host + path.replace(/\/+$/, "") + query;
+    return media ? `${page}@${media}` : page;
   }
 
   // cyrb53: a small, well-mixed 53-bit string hash.
@@ -489,6 +569,7 @@
     formatClock,
     rewriteClockText,
     rewriteLastClock,
+    lastClock,
     parseClock,
     hasClock,
     mentionsDuration,

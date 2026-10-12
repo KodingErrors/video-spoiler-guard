@@ -19,9 +19,13 @@
       <div class="segmented" role="radiogroup" aria-label="Guard videos on this site" id="here-choice">
         <label><input type="radio" name="here" value="on" id="here-on"><span>On</span></label>
         <label><input type="radio" name="here" value="off" id="here-off"><span>Off</span></label>
-        <label id="here-auto-wrap"><input type="radio" name="here" value="auto" id="here-auto"><span>Auto-detect</span></label>
+        <label id="here-auto-wrap"><input type="radio" name="here" value="auto" id="here-auto"><span id="here-auto-label">Default</span></label>
       </div>
       <p class="hint" id="here-hint"></p>
+      <label class="check-row" for="here-ask" id="here-ask-row">
+        <input type="checkbox" id="here-ask">
+        Show the dialog on this site
+      </label>
     </section>
     <section id="here-unsupported" hidden>
       <p class="hint">This page can't be guarded. Open a video site to change its setting.</p>
@@ -31,7 +35,7 @@
       <label class="switch-row" for="auto-detect">
         <span>
           <strong>Auto-detect all video playbacks and automatically apply</strong>
-          <small>On sites not in the list below, the guard turns on as soon as a video plays, and a dialog lets you cancel it.</small>
+          <small>Guards every video that starts playing on any site that isn't switched off, and shows a dialog where you can cancel. When this is off, only the sites switched on below are guarded, with no dialog.</small>
         </span>
         <input type="checkbox" class="switch" id="auto-detect">
       </label>
