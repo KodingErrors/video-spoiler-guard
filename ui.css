@@ -152,6 +152,3 @@ body.options { padding-inline: 16px; padding-block: 32px 64px; }
 .options .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .options .saved { color: var(--ok); font-size: 12.5px; }
 .options .filter { width: 100%; }
-@media (max-width: 520px) {
-  .add { flex-direction: column; }
-}
