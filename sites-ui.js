@@ -39,14 +39,18 @@
 
   // One row of the site list: name, domains and an on/off switch, plus a
   // remove button for sites the user added.
-  function siteRow(site, { errorTarget, extra } = {}) {
+  // `afterChange(site)` runs once the switch's new state is saved.
+  function siteRow(site, { errorTarget, extra, afterChange } = {}) {
     const inputId = "site-" + slug(site);
     const toggle = el("input", {
       type: "checkbox",
       class: "switch",
       id: inputId,
       checked: site.enabled,
-      onchange: (e) => Store.setSiteEnabled(site, e.target.checked).catch((err) => reportError(errorTarget, err)),
+      onchange: (e) =>
+        Store.setSiteEnabled(site, e.target.checked)
+          .then(() => afterChange && afterChange(site))
+          .catch((err) => reportError(errorTarget, err)),
     });
     const name = el("span", { class: "site-name" }, site.name, site.builtIn ? null : el("span", { class: "badge-custom", text: "Added" }));
     const domains = el("span", { class: "site-domains", text: site.domains.join(", ") });

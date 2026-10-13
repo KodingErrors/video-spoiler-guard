@@ -249,3 +249,12 @@ test("a session choice overrides the site until the browser closes", () => {
   assert.equal(VSG.applySessionChoice(VSG.decide(none, "example.net"), { guard: true }).mode, "none");
   assert.equal(VSG.sessionChoiceFor(choices, "twitch.tv"), null);
 });
+
+test("a session choice never overrides a more specific site entry", () => {
+  const s = VSG.normalizeSettings({ "site:gaming.youtube.com": { enabled: true } });
+  const entry = VSG.findSite(VSG.resolveSites(s), "gaming.youtube.com");
+  assert.equal(VSG.sessionChoiceFor({ "youtube.com": { guard: false } }, "gaming.youtube.com", entry), null);
+  assert.deepEqual(VSG.sessionChoiceFor({ "gaming.youtube.com": { guard: false } }, "gaming.youtube.com", entry), { guard: false });
+  const yt = VSG.findSite(VSG.resolveSites(s), "www.youtube.com");
+  assert.deepEqual(VSG.sessionChoiceFor({ "youtube.com": { guard: false } }, "www.youtube.com", yt), { guard: false });
+});

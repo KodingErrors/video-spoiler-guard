@@ -141,6 +141,9 @@ const PAGES = {
     <iframe id="e1" src="https://www.youtube.com/embed/aaaaaaaaaaa" style="width:700px;height:420px;border:0"></iframe>
     <iframe id="e2" src="https://www.youtube.com/embed/bbbbbbbbbbb" style="width:700px;height:420px;border:0"></iframe>`,
   "https://www.youtube.com/embed/aaaaaaaaaaa": ytPage("/vsg/long.webm"),
+  "https://blog3.example.com/embed": `
+    <iframe id="yt" src="https://www.youtube.com/embed/ccccccccccc" style="width:700px;height:420px;border:0"></iframe>`,
+  "https://www.youtube.com/embed/ccccccccccc": ytPage("/vsg/long.webm"),
   "https://www.youtube.com/embed/bbbbbbbbbbb": ytPage("/vsg/long2.webm"),
 };
 
@@ -455,6 +458,73 @@ async function main() {
     assert.equal(await optionsPage.locator('#sites li[data-key="site:typing.example.net"] input[id^="durationSelector-"]').inputValue(), ".player .time-total");
     assert.equal((await getStorage())["site:typing.example.net"].durationSelector, undefined, "nothing saved mid-typing");
     await removeStorage("site:typing.example.net");
+  });
+
+  const getSession = () => optionsPage.evaluate(() => chrome.storage.session.get(null));
+  const clearSession = () => optionsPage.evaluate(async () => {
+    const all = await chrome.storage.session.get(null);
+    await chrome.storage.session.remove(Object.keys(all).filter((k) => k.startsWith("session:")));
+  });
+  const popupFor = async (url) => {
+    const popup = await context.newPage();
+    await popup.addInitScript((u) => {
+      chrome.tabs.query = async () => [{ url: u }];
+    }, url);
+    await popup.goto(`chrome-extension://${extId}/popup.html`);
+    await popup.waitForTimeout(400);
+    return popup;
+  };
+
+  await check("In an embed, both 'Don't show this again' options apply to the embed's site", async () => {
+    await setStorage({ "builtin:youtube": { enabled: true, ask: true }, confirmSeconds: 0 });
+    const page = await open("https://blog3.example.com/embed");
+    const frame = page.frame({ url: /youtube\.com\/embed/ });
+    await frame.waitForSelector("video-spoiler-guard-prompt", { state: "attached", timeout: 8000 });
+    await page.focus("#yt");
+    for (const key of ["Tab", "Space", "Tab", "Tab", "Enter"]) await page.keyboard.press(key); // "for this session", then Cancel
+    await page.waitForTimeout(500);
+    const session = await getSession();
+    assert.equal(session["session:youtube.com"]?.guard, false, JSON.stringify(session));
+    assert.equal(session["session:blog3.example.com"], undefined, "not split onto the page around the embed");
+    await clearSession();
+    await setStorage({ "builtin:youtube": { enabled: true, ask: false }, confirmSeconds: 10 });
+    await page.close();
+  });
+
+  await check("Popup: a session choice that isn't in effect says so", async () => {
+    await optionsPage.evaluate(() => chrome.storage.session.set({ "session:youtube.com": { guard: true, at: 1 } }));
+    await setStorage({ "builtin:youtube": { enabled: false, ask: false } });
+    const popup = await popupFor("https://www.youtube.com/watch?v=abcDEF12345");
+    assert.match(await popup.textContent("#here-session-text"), /isn't in effect/);
+    assert.equal(await popup.textContent("#here-pill"), "Off");
+    await popup.close();
+    // Switching the site on from the dashboard replaces the session choice.
+    await optionsPage.reload();
+    await optionsPage.click("#site-builtin_3ayoutube");
+    await optionsPage.waitForTimeout(500);
+    assert.equal((await getStorage())["builtin:youtube"]?.enabled, true);
+    assert.equal((await getSession())["session:youtube.com"], undefined);
+    await setStorage({ "builtin:youtube": { enabled: true, ask: false } });
+  });
+
+  await check("Popup: the Chrome Web Store is shown as a page that can't be guarded", async () => {
+    const popup = await popupFor("https://chromewebstore.google.com/detail/some-extension/abcdef");
+    assert.equal(await popup.isVisible("#here-unsupported"), true);
+    assert.equal(await popup.isVisible("#here"), false);
+    await popup.close();
+  });
+
+  await check("Popup: changing an auto-detected site keeps its progress-bar hiding", async () => {
+    await setStorage({ autoHideProgress: true });
+    const popup = await popupFor("https://autosite.example.org/watch/1");
+    await popup.click("#here-ask");
+    await popup.waitForTimeout(400);
+    const stored = (await getStorage())["site:autosite.example.org"];
+    assert.equal(stored?.ask, false);
+    assert.equal(stored?.hideProgress, true);
+    await removeStorage("site:autosite.example.org");
+    await setStorage({ autoHideProgress: false });
+    await popup.close();
   });
 
   await check("Options: a rejected number of hours is reset in the field", async () => {

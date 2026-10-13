@@ -15,7 +15,9 @@
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const url = new URL(tab.url);
-    if (url.protocol === "http:" || url.protocol === "https:") host = url.hostname;
+    // Chrome never lets extensions run in the Web Store.
+    const webStore = url.hostname === "chromewebstore.google.com" || (url.hostname === "chrome.google.com" && url.pathname.startsWith("/webstore"));
+    if ((url.protocol === "http:" || url.protocol === "https:") && !webStore) host = url.hostname;
   } catch {
     host = null;
   }
@@ -29,7 +31,22 @@
   };
 
   const siteDecision = () => VSG.decide(settings, host);
-  const sessionChoice = () => VSG.sessionChoiceFor(sessionChoices, host);
+  const entryFor = () => VSG.findSite(VSG.resolveSites(settings), host);
+  const sessionChoice = () => VSG.sessionChoiceFor(sessionChoices, host, entryFor());
+  // The stored keys behind this site's session choice: the one found, plus
+  // the other domains of its entry (a choice made on YouTube is stored for
+  // youtube.com and youtube-nocookie.com).
+  const sessionKeys = () => {
+    const choice = sessionChoice();
+    if (!choice) return [];
+    const entry = entryFor();
+    return Object.keys(sessionChoices).filter((d) => sessionChoices[d] === choice || (entry && entry.domains.includes(d)));
+  };
+  // What auto-detect gave an unlisted site, kept when it gets an entry.
+  const autoProtection = () => {
+    const d = siteDecision();
+    return { hideProgress: !!(d.mode === "auto" && d.site && d.site.hideProgress) };
+  };
   const effective = () => VSG.applySessionChoice(siteDecision(), sessionChoice());
   const guarding = (d) => d.mode === "on" || d.mode === "auto";
   // The entry that sets this site, if it is listed (possibly a parent domain).
@@ -79,9 +96,11 @@
     $("here-ask").checked = siteDecision().mode === "auto" || !!(site && site.ask !== false);
     $("here-session").hidden = !choice;
     if (choice) {
-      $("here-session-text").textContent = choice.guard
-        ? "This session: hidden without the dialog."
-        : "This session: videos here are left alone.";
+      $("here-session-text").textContent = !decision.session
+        ? "Your choice for this session isn't in effect while this site is off."
+        : choice.guard
+          ? "This session: hidden without the dialog."
+          : "This session: videos here are left alone.";
     }
   }
 
@@ -91,16 +110,17 @@
   }
 
   // Switching the site on or off is a fresh choice, so it also replaces any
-  // choice made for this session.
+  // choice made for this session. The lasting setting is saved first, so a
+  // failed save leaves the session choice in place.
   $("here-toggle").addEventListener("change", async (e) => {
     $("here-error").textContent = "";
     const on = e.target.checked;
     const site = listedSite();
+    const keys = sessionKeys();
     try {
-      const choice = sessionChoice();
-      if (choice) await Store.clearSessionChoice(Object.keys(sessionChoices).find((d) => sessionChoices[d] === choice));
       if (site) await Store.setSiteEnabled(site, on);
-      else if (on !== guarding(siteDecision())) await Store.setCustomSite(host, { enabled: on });
+      else if (on !== guarding(siteDecision())) await Store.setCustomSite(host, { enabled: on, ...autoProtection() });
+      for (const key of keys) await Store.clearSessionChoice(key);
     } catch (err) {
       fail(err);
     }
@@ -109,21 +129,19 @@
   $("here-ask").addEventListener("change", (e) => {
     $("here-error").textContent = "";
     const site = listedSite();
-    const write = site ? Store.setSiteAsk(site, e.target.checked) : Store.setCustomSite(host, { enabled: true, ask: e.target.checked });
+    const write = site ? Store.setSiteAsk(site, e.target.checked) : Store.setCustomSite(host, { enabled: true, ask: e.target.checked, ...autoProtection() });
     write.catch(fail);
   });
 
   $("here-session-clear").addEventListener("click", () => {
-    const choice = sessionChoice();
-    const key = Object.keys(sessionChoices).find((d) => sessionChoices[d] === choice);
-    if (key) Store.clearSessionChoice(key).catch(fail);
+    for (const key of sessionKeys()) Store.clearSessionChoice(key).catch(fail);
   });
 
   $("open-dashboard").addEventListener("click", () => chrome.runtime.openOptionsPage());
 
   chrome.storage.onChanged.addListener(async (changes, area) => {
     if (area === "sync") settings = await Store.loadSettings();
-    else if (area === "session") sessionChoices = await Store.loadSessionChoices();
+    else if (area === "session" && Object.keys(changes).some((k) => k.startsWith("session:"))) sessionChoices = await Store.loadSessionChoices();
     else return;
     render();
   });

@@ -70,28 +70,37 @@
   // The page's own setting decides for its embedded players: "Off" on a page
   // covers a YouTube embed in it, and "On" covers an unlisted player frame.
   // An embed whose own site is listed follows its own entry otherwise.
+  // A "Don't show this again – for this session" choice replaces the site's
+  // setting until the browser closes. It is looked up for the same site the
+  // dialog's options name (`scopeHost`), and never overrides a more specific
+  // site entry.
   function computeDecision() {
-    // A "Don't show this again – for this session" choice for the page the
-    // user is on replaces the site's setting until the browser closes.
-    return VSG.applySessionChoice(siteDecision(), VSG.sessionChoiceFor(sessionChoices, TOP_HOST));
+    const d = siteDecision();
+    if (!d.scopeHost) return d;
+    const entry = settings ? VSG.findSite(VSG.resolveSites(settings), d.scopeHost) : null;
+    return VSG.applySessionChoice(d, VSG.sessionChoiceFor(sessionChoices, d.scopeHost, entry));
   }
 
+  // `listed` is the site entry that decides (if any) and `scopeHost` the host
+  // the dialog's "Don't show this again" options apply to: the page the user
+  // is on, except in an embed whose own site is listed and decides for it.
   function siteDecision() {
-    if (!settings || !FRAME_HOST) return { mode: "none", site: null, listed: null };
+    if (!settings || !FRAME_HOST) return { mode: "none", site: null, listed: null, scopeHost: "" };
     const own = VSG.decide(settings, FRAME_HOST);
     const ownListed = own.mode === "on" || own.mode === "off" ? own.site : null;
-    if (IS_TOP || TOP_HOST === FRAME_HOST) return { ...own, listed: ownListed };
+    if (IS_TOP || TOP_HOST === FRAME_HOST) return { ...own, listed: ownListed, scopeHost: TOP_HOST };
     const top = VSG.decide(settings, TOP_HOST);
-    if (top.mode === "off") return { mode: "off", site: top.site, listed: top.site };
-    if (ownListed) return { ...own, listed: ownListed };
+    if (top.mode === "off") return { mode: "off", site: top.site, listed: top.site, scopeHost: TOP_HOST };
+    if (ownListed) return { ...own, listed: ownListed, scopeHost: FRAME_HOST };
     if (top.mode === "on") {
       return {
         mode: "on",
         site: { ...VSG.AUTO_SITE, hideProgress: top.site.hideProgress, ask: top.site.ask },
         listed: top.site,
+        scopeHost: TOP_HOST,
       };
     }
-    return { ...own, listed: null };
+    return { ...own, listed: null, scopeHost: TOP_HOST };
   }
 
   function active() {
@@ -1242,13 +1251,18 @@
   //     when the browser closes.
   function remember(choice) {
     const writes = [];
+    // Both options apply to the same site: its entry when one decides,
+    // otherwise the page's host.
+    const listed = decision.listed;
+    const scope = decision.scopeHost || TOP_HOST;
     if (choice.website) {
-      const listed = decision.listed;
       if (listed) writes.push(choice.cancel ? Store.setSiteEnabled(listed, false) : Store.setSiteAsk(listed, false));
       // Keep the protection the site had while it was auto-detected.
-      else writes.push(Store.setCustomSite(TOP_HOST, { enabled: !choice.cancel, ask: false, hideProgress: !!(decision.site && decision.site.hideProgress) }));
+      else writes.push(Store.setCustomSite(scope, { enabled: !choice.cancel, ask: false, hideProgress: !!(decision.site && decision.site.hideProgress) }));
     }
-    if (choice.session) writes.push(Store.setSessionChoice(TOP_HOST, !choice.cancel));
+    if (choice.session) {
+      for (const domain of listed ? listed.domains : [scope]) writes.push(Store.setSessionChoice(domain, !choice.cancel));
+    }
     for (const write of writes) {
       write.catch(() => {
         // Storage refused the write (quota); the dialog is already gone.
@@ -1259,7 +1273,7 @@
   function rememberLabel() {
     const listed = decision.listed;
     if (listed) return listed.builtIn ? listed.name : listed.domains[0];
-    return VSG.normalizeDomain(TOP_HOST, { allowSingleLabel: true }) || "";
+    return VSG.normalizeDomain(decision.scopeHost || TOP_HOST, { allowSingleLabel: true }) || "";
   }
 
   const PROMPT_CSS = `
@@ -1332,7 +1346,7 @@
       label.hidden = !where;
       return { box, label };
     };
-    const forSession = option("Don't show this again \u2013 for this session");
+    const forSession = option(`Don't show this again \u2013 for this session (${where})`);
     const forWebsite = option(`Don't show this again \u2013 for this website (${where})`);
     const options = document.createElement("div");
     options.className = "options";

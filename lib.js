@@ -318,12 +318,16 @@
   }
 
   // The "Don't show this again – for this session" choice for this host, if
-  // any. `choices` maps a domain to { guard }.
-  function sessionChoiceFor(choices, hostname) {
+  // any. `choices` maps a domain to { guard }. Like site entries, the most
+  // specific one wins: a choice for youtube.com doesn't override a separate
+  // entry for gaming.youtube.com (`site`, the entry that decides the host).
+  function sessionChoiceFor(choices, hostname, site = null) {
+    let floor = -1;
+    for (const d of (site && site.domains) || []) if (hostMatches(hostname, d)) floor = Math.max(floor, d.length);
     let best = null;
     let bestLength = -1;
     for (const [domain, choice] of Object.entries(choices || {})) {
-      if (hostMatches(hostname, domain) && domain.length > bestLength) {
+      if (hostMatches(hostname, domain) && domain.length >= floor && domain.length > bestLength) {
         best = choice;
         bestLength = domain.length;
       }

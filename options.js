@@ -120,7 +120,9 @@
     const errorTarget = $("sites-error");
     const key = slug(site);
     const ask = checkbox(`ask-${key}`, site.ask !== false, "Show the dialog when a video starts (with auto-detect on)", (e) =>
-      Store.setSiteAsk(site, e.target.checked).catch((err) => reportError(errorTarget, err)),
+      Store.setSiteAsk(site, e.target.checked)
+        .then(() => clearSessionFor(site))
+        .catch((err) => reportError(errorTarget, err)),
     );
     const hide = checkbox(
       `hide-${key}`,
@@ -207,7 +209,7 @@
     );
     const list = $("sites");
     rerenderList(list, () => {
-      list.replaceChildren(...sites.map((site) => siteRow(site, { errorTarget: $("sites-error"), extra: siteExtras(site) })));
+      list.replaceChildren(...sites.map((site) => siteRow(site, { errorTarget: $("sites-error"), extra: siteExtras(site), afterChange: clearSessionFor })));
       if (!sites.length) list.append(el("li", { class: "hint", text: "No sites match." }));
     });
   }
@@ -222,28 +224,58 @@
 
   // ---- This browser session -------------------------------------------
 
+  // Session choices grouped by the site entry they belong to (a choice made
+  // on YouTube is stored for each of its domains).
+  function sessionGroups() {
+    const sites = VSG.resolveSites(settings);
+    const groups = new Map();
+    for (const domain of Object.keys(sessionChoices).sort()) {
+      const site = VSG.findSite(sites, domain);
+      const name = site ? (site.builtIn ? site.name : site.domains[0]) : domain;
+      const group = groups.get(name) || { name, domains: [], choice: sessionChoices[domain] };
+      group.domains.push(domain);
+      groups.set(name, group);
+    }
+    return [...groups.values()];
+  }
+
   function renderSession() {
     const list = $("session-list");
-    const domains = Object.keys(sessionChoices).sort();
+    const focused = list.contains(document.activeElement) ? document.activeElement.closest("li") : null;
+    const focusedName = focused ? focused.dataset.name : null;
+    const groups = sessionGroups();
     list.replaceChildren(
-      ...domains.map((domain) =>
-        el(
+      ...groups.map((group) => {
+        const inEffect = VSG.applySessionChoice(VSG.decide(settings, group.domains[0]), group.choice).session;
+        const what = !inEffect ? "Not in effect while the site is off" : group.choice.guard ? "Hidden without the dialog" : "Left alone";
+        return el(
           "li",
-          { "data-domain": domain },
-          el("span", null, el("span", { class: "site-name", text: domain }), " ",
-            el("span", { class: "what", text: sessionChoices[domain].guard ? "Hidden without the dialog" : "Left alone" })),
+          { "data-name": group.name, "data-domain": group.domains.join(" ") },
+          el("span", null, el("span", { class: "site-name", text: group.name }), " ", el("span", { class: "what", text: what })),
           el("button", {
             type: "button",
             class: "link",
             text: "Forget",
-            "aria-label": `Forget the session choice for ${domain}`,
-            onclick: () => Store.clearSessionChoice(domain),
+            "aria-label": `Forget the session choice for ${group.name}`,
+            onclick: () => Promise.all(group.domains.map((d) => Store.clearSessionChoice(d))),
           }),
-        ),
-      ),
+        );
+      }),
     );
-    if (!domains.length) list.append(el("li", { class: "hint", text: "No choices yet for this session." }));
-    $("session-clear-all").disabled = !domains.length;
+    if (!groups.length) list.append(el("li", { class: "hint", text: "No choices yet for this session." }));
+    $("session-clear-all").disabled = !groups.length;
+    // Keep keyboard focus in the list when it is rebuilt.
+    if (focused) {
+      const again = focusedName && list.querySelector(`li[data-name="${CSS.escape(focusedName)}"] button`);
+      (again || list.querySelector("button") || $("session-clear-all")).focus();
+    }
+  }
+
+  // Switching a site, or its dialog option, here is a fresh choice that
+  // replaces any choice made for it this session.
+  function clearSessionFor(site) {
+    const keys = Object.keys(sessionChoices).filter((d) => site.domains.some((sd) => VSG.hostMatches(d, sd)));
+    return Promise.all(keys.map((d) => Store.clearSessionChoice(d)));
   }
 
   $("session-clear-all").addEventListener("click", () => {
@@ -288,6 +320,8 @@
 
   chrome.storage.onChanged.addListener(async (changes, area) => {
     if (area === "session") {
+      // The toolbar badge keeps its own keys here too; only choices matter.
+      if (!Object.keys(changes).some((k) => k.startsWith("session:"))) return;
       sessionChoices = await Store.loadSessionChoices();
       renderSession();
       return;
