@@ -181,7 +181,7 @@
     const customSites = [];
     for (const key of Object.keys(raw)) {
       if (!key.startsWith("site:")) continue;
-      const domain = normalizeDomain(key.slice(5));
+      const domain = normalizeDomain(key.slice(5), { allowSingleLabel: true });
       const o = raw[key];
       if (!domain || !o || typeof o !== "object") continue;
       customSites.push({
@@ -242,7 +242,10 @@
   // Accepts "example.com", "www.example.com", "https://example.com/watch?x"
   // or "*.example.com" and returns "example.com", or null when it is not a
   // usable host name.
-  function normalizeDomain(input) {
+  // Single-word hosts ("jellyfin", "nas") are accepted when they come from a
+  // real page address (allowSingleLabel), but not when typed, where they are
+  // more likely a typo for a full domain.
+  function normalizeDomain(input, { allowSingleLabel = false } = {}) {
     if (typeof input !== "string") return null;
     let text = input.trim().toLowerCase();
     if (!text) return null;
@@ -256,8 +259,8 @@
     host = host.replace(/\.$/, "").replace(/^www\./, "");
     if (!host || host.length > 253) return null;
     if (/^\[[0-9a-f:.]+\]$/.test(host)) return host; // IPv6 literal
-    if (!/^[a-z0-9.-]+$/.test(host)) return null;
-    if (host !== "localhost" && !host.includes(".")) return null;
+    if (!/^[a-z0-9._-]+$/.test(host)) return null;
+    if (host !== "localhost" && !host.includes(".") && !allowSingleLabel) return null;
     if (host.split(".").some((label) => label === "" || label.length > 63 || label.startsWith("-") || label.endsWith("-"))) return null;
     return host;
   }
@@ -369,18 +372,38 @@
   // "13:45:10" or "3:45:10:00". Remaining time needs a leading minus sign
   // unless `remainingUnsigned` is set, because an unsigned remaining clock is
   // indistinguishable from elapsed time.
-  function rewriteClockText(text, { duration, offset, currentTime = null, remainingUnsigned = false }) {
+  function rewriteClockText(text, options) {
+    const result = rewriteClockDetailed(text, options);
+    return result ? result.text : null;
+  }
+
+  // As rewriteClockText, and also says whether a time-remaining clock was
+  // rewritten, so the caller can remember that this spot shows time left.
+  //
+  // An unsigned clock can be elapsed time or time left; around the middle of
+  // a video the two are equal. Such an ambiguous clock is treated as time
+  // left only when it is the last of several clocks ("elapsed / left"), or
+  // when the caller already knows this spot shows time left. Otherwise the
+  // elapsed clock would jump by hours at the halfway point.
+  function rewriteClockDetailed(text, { duration, offset, currentTime = null, remainingUnsigned = false, knownRemaining = false }) {
     if (typeof text !== "string" || !text || !(duration > 0) || !(offset > 0)) return null;
     if (!/\d:\d\d/.test(text)) return null;
 
     const totals = clockVariants(roundings(duration));
     const remaining = new Map();
-    if (typeof currentTime === "number" && Number.isFinite(currentTime) && currentTime > 0 && currentTime < duration) {
+    const elapsed = new Set();
+    const playing = typeof currentTime === "number" && Number.isFinite(currentTime) && currentTime > 0 && currentTime < duration;
+    if (playing) {
       const left = duration - currentTime;
       const values = new Set();
       for (const v of roundings(left)) for (const d of [-1, 0, 1]) if (v + d >= 0) values.add(v + d);
       for (const [clock, info] of clockVariants([...values])) {
         if (!totals.has(clock)) remaining.set(clock, info);
+      }
+      if (remainingUnsigned) {
+        const shown = new Set();
+        for (const v of roundings(currentTime)) for (const d of [-1, 0, 1]) if (v + d >= 0) shown.add(v + d);
+        for (const clock of clockVariants([...shown]).keys()) elapsed.add(clock);
       }
     }
 
@@ -390,17 +413,36 @@
     if (remainingUnsigned) for (const clock of remaining.keys()) tokens.push(clock);
     tokens.sort((a, b) => b.length - a.length);
 
+    // Where the clocks are, to tell "elapsed / left" pairs from lone clocks.
+    let count = 0;
+    let lastAt = -1;
+    CLOCK_TOKEN.lastIndex = 0;
+    for (let m = CLOCK_TOKEN.exec(text); m; m = CLOCK_TOKEN.exec(text)) {
+      count++;
+      lastAt = m.index;
+    }
+
     const pattern = new RegExp(`(?<![\\d:.])(?:${tokens.map(escapeRegExp).join("|")})(?![\\d:])`, "g");
     let changed = false;
-    const result = text.replace(pattern, (match) => {
+    let rewroteRemaining = false;
+    const result = text.replace(pattern, (match, at) => {
       const sign = SIGNS.includes(match[0]) ? match[0] : "";
       const clock = sign ? match.slice(1) : match;
-      const info = sign ? remaining.get(clock) : totals.get(clock) || remaining.get(clock);
+      let info = sign ? remaining.get(clock) : totals.get(clock);
+      if (!info && !sign) {
+        info = remaining.get(clock);
+        if (info && elapsed.has(clock)) {
+          const lastOfSeveral = count > 1 && at === lastAt;
+          if (!lastOfSeveral && !(count === 1 && knownRemaining)) return match;
+        }
+        if (info && count > 1 && at !== lastAt) return match; // the elapsed half of a pair
+      }
       if (!info) return match;
       changed = true;
+      if (sign || !totals.has(clock)) rewroteRemaining = true;
       return sign + formatClock(info.value + offset, info.style);
     });
-    return changed ? result : null;
+    return changed ? { text: result, remaining: rewroteRemaining } : null;
   }
 
   const SIGNS = ["-", "\u2212", "\u2013"]; // hyphen, minus sign, en dash
@@ -568,6 +610,7 @@
     decide,
     formatClock,
     rewriteClockText,
+    rewriteClockDetailed,
     rewriteLastClock,
     lastClock,
     parseClock,

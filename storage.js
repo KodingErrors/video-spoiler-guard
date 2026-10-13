@@ -30,7 +30,9 @@
 
   // Adds the site when it is not listed yet.
   function setCustomSite(domain, patch) {
-    const clean = VSG.normalizeDomain(domain);
+    // Called with page hosts (which may be single words like "jellyfin") and
+    // with domains the add-site form has already checked.
+    const clean = VSG.normalizeDomain(domain, { allowSingleLabel: true });
     if (!clean) return Promise.reject(new Error("That isn't a web address."));
     return sync()
       .get("site:" + clean)

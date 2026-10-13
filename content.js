@@ -36,8 +36,10 @@
   const MEDIA_EVENTS = ["loadedmetadata", "durationchange", "playing", "play", "emptied", "loadstart"];
   const MIN_SIZE = { width: 200, height: 112 }; // smaller videos are previews or ads
   const TICK_MS = 1000;
-  const DEEP_SCAN_EVERY = 2; // ticks
   const OUTSIDE_LABEL_RECHECK_MS = 5000;
+  const DETACH_GRACE_MS = 5000;  // a player may take its <video> out for a moment
+  const MASK_LIMIT_MS = 10000;   // longest a clock stays hidden while a source loads
+  const LIVE_GROWTH_S = 60;      // a live stream's length grows by at most this per step
 
   // ---- Which site this frame belongs to ---------------------------------
 
@@ -99,13 +101,21 @@
 
   // ---- Shadow-DOM-aware tree helpers --------------------------------------
 
-  // chrome.dom.openOrClosedShadowRoot reaches closed roots too; it exists in
-  // content scripts only.
+  // Elements allowed to call attachShadow(): custom elements and these.
+  const SHADOW_HOSTS = new Set(["ARTICLE", "ASIDE", "BLOCKQUOTE", "BODY", "DIV", "FOOTER", "H1", "H2", "H3", "H4", "H5", "H6", "HEADER", "MAIN", "NAV", "P", "SECTION", "SPAN"]);
+  const closedRootOf = chromeApi.dom && chromeApi.dom.openOrClosedShadowRoot;
+
+  // el.shadowRoot is cheap; chrome.dom.openOrClosedShadowRoot also reaches
+  // closed roots (content scripts only) but costs a call into the extension
+  // bindings, so it is only asked about elements that can host a root.
   function shadowOf(el) {
+    const open = el.shadowRoot;
+    if (open) return open;
+    if (!closedRootOf || (!el.tagName.includes("-") && !SHADOW_HOSTS.has(el.tagName))) return null;
     try {
-      return chromeApi.dom && chromeApi.dom.openOrClosedShadowRoot ? chromeApi.dom.openOrClosedShadowRoot(el) : el.shadowRoot;
+      return closedRootOf(el);
     } catch {
-      return el.shadowRoot || null;
+      return null;
     }
   }
 
@@ -252,7 +262,9 @@
       reset: true,          // a new source is loading; take a new key once it has metadata
       offset: 0,
       status: "idle",       // idle | applied | cancelled | removed
-      adIdle: false,        // idle only because an ad is playing
+      adIdle: false,        // idle only because an ad plays before the video
+      adMode: false,        // guarded, and an ad is playing
+      contentDuration: NaN, // the video's own length, kept through an ad
       cancelled: false,
       asked: false,
       container: null,
@@ -261,6 +273,12 @@
       hidden: new Map(),    // Element -> { value, priority }
       outside: [],          // duration labels outside the container
       outsideCheckedAt: 0,
+      observed: [],         // roots the MutationObserver watches for this record
+      masked: new Map(),    // Element -> { value, priority }, hidden while a source loads
+      maskedAt: 0,
+      remainingSpots: new WeakSet(), // elements known to show time left
+      keyHref: "",
+      detachedAt: 0,
       closePrompt: null,
     };
     records.set(video, record);
@@ -271,6 +289,8 @@
   function untrack(record) {
     const wasApplied = record.status === "applied";
     restore(record);
+    unmask(record);
+    removeFromQueue(record);
     if (record.closePrompt) record.closePrompt();
     record.status = "removed";
     for (const type of MEDIA_EVENTS) record.video.removeEventListener(type, onMediaEvent, true);
@@ -279,19 +299,20 @@
     if (wasApplied) reportStatus();
   }
 
-  // The media file, or failing that its length, tells apart videos that
-  // share a page address. Neither depends on where the element sits in the DOM.
+  // The length tells apart videos that share a page address. It doesn't
+  // depend on where the element sits in the DOM, on the CDN host or on the
+  // quality being played, so a quality switch keeps the same fake length.
   function mediaId(video) {
+    if (Number.isFinite(video.duration)) return "len:" + Math.round(video.duration);
     const src = video.currentSrc || video.src || "";
     if (/^https?:/i.test(src)) {
       try {
-        const url = new URL(src);
-        return "src:" + VSG.hash53(url.origin + url.pathname).toString(36);
+        return "src:" + VSG.hash53(new URL(src).pathname).toString(36);
       } catch {
-        // fall through to the length
+        return "";
       }
     }
-    return Number.isFinite(video.duration) ? "len:" + Math.round(video.duration) : "";
+    return "";
   }
 
   function computeKey(record) {
@@ -320,16 +341,32 @@
   }
 
   // Cheap checks first; the container is only looked up for videos that pass.
-  function worthGuarding(video) {
+  // Size only decides whether to start: a guarded video that shrinks into a
+  // mini-player stays guarded.
+  function worthGuarding(record) {
+    const video = record.video;
     const d = video.duration;
     if (!Number.isFinite(d) || d <= 0) return false; // live streams have no end to spoil
     if (d < settings.minVideoMinutes * 60) return false;
-    return inKnownPlayer(video) || bigEnough(video);
+    if (record.status === "applied") return true;
+    return (inKnownPlayer(video) && isRendered(video)) || bigEnough(video);
   }
 
+  // Another <video> counts as a separate player only when it is on screen,
+  // has media, and sits beside this one: an ad SDK's video is hidden, idle,
+  // or layered over the same box.
   function holdsOtherVideo(el, video) {
-    const videos = el.querySelectorAll("video");
-    return videos.length > 1 || (videos.length === 1 && videos[0] !== video);
+    const vr = video.getBoundingClientRect();
+    for (const other of el.querySelectorAll("video")) {
+      if (other === video || other.readyState === 0 || !isRendered(other)) continue;
+      const r = other.getBoundingClientRect();
+      if (r.width < MIN_SIZE.width || r.height < MIN_SIZE.height) continue;
+      const w = Math.min(r.right, vr.right) - Math.max(r.left, vr.left);
+      const h = Math.min(r.bottom, vr.bottom) - Math.max(r.top, vr.top);
+      if (w > 0 && h > 0 && w * h >= 0.5 * Math.min(r.width * r.height, vr.width * vr.height)) continue;
+      return true;
+    }
+    return false;
   }
 
   // The element that holds the player's controls: the site's player element
@@ -343,14 +380,24 @@
       if (player) return player;
     }
     const vr = video.getBoundingClientRect();
+    // In fullscreen the controls fill the fullscreen element even when the
+    // picture doesn't; a portrait video sits in a wider 16:9 box.
+    const fs = document.fullscreenElement;
+    const inFullscreen = !!fs && containsDeep(fs, video);
+    const maxWidth = Math.max(vr.width * 1.25 + 40, vr.height * 1.78 + 40);
+    const maxHeight = vr.height * 1.25 + 160;
     let best = video;
     let node = parentDeep(video);
     for (let depth = 0; node && depth < 12; depth++) {
       if (node === document.body || node === document.documentElement) break;
-      const r = node.getBoundingClientRect();
-      if (r.width > vr.width * 1.25 + 40 || r.height > vr.height * 1.25 + 160) break;
+      const insideFullscreen = inFullscreen && containsDeep(fs, node);
+      if (!insideFullscreen) {
+        const r = node.getBoundingClientRect();
+        if (r.width > maxWidth || r.height > maxHeight) break;
+      }
       if (holdsOtherVideo(node, video)) break;
       best = node;
+      if (node === fs) break;
       node = parentDeep(node);
     }
     return best;
@@ -362,70 +409,130 @@
     if (stopped || record.status === "removed") return;
     const video = record.video;
     if (!video.isConnected) {
+      // A player that takes its <video> out for a moment (to move it into a
+      // mini-player, or to remount it) leaves its controls on screen: keep
+      // their fakes for a while instead of showing the real length.
+      if (active() && record.status === "applied" && record.container && record.container.isConnected) {
+        record.detachedAt = record.detachedAt || Date.now();
+        if (Date.now() - record.detachedAt < DETACH_GRACE_MS) return;
+      }
       untrack(record);
       return;
     }
+    record.detachedAt = 0;
     if (!active()) {
       setStatus(record, "idle");
       return;
     }
-    // While a new source loads, keep showing the fakes instead of flashing
-    // the real text; the new metadata decides what happens next.
-    if (record.reset && (video.readyState === 0 || Number.isNaN(video.duration))) {
+    // While a source loads (readyState 0 from the moment src changes, even
+    // before "emptied" fires), keep showing the fakes instead of the real
+    // text; the new metadata decides what happens next.
+    if (video.readyState === 0 || Number.isNaN(video.duration)) {
       if (record.status !== "applied") record.status = "idle";
       return;
     }
+    if (record.masked.size && Date.now() - record.maskedAt > MASK_LIMIT_MS) unmask(record);
 
-    // The key belongs to the media: it changes when a new source loads, when
-    // the length changes, or when a site's own video id in the address
-    // changes, never because the DOM or an unrelated query parameter moved.
+    // The key belongs to the media. It changes when a new source with a new
+    // length loads, or when a site's own video id in the address changes;
+    // never because the DOM moved, a query parameter changed, the quality
+    // changed, or a live stream grew.
     const key = computeKey(record);
     const siteKeyed = !!(decision.site && decision.site.builtIn && key.startsWith(decision.site.id + ":"));
-    const lengthMoved = Number.isFinite(video.duration) && Math.abs(video.duration - record.keyDuration) > 1;
-    if (!record.key || record.reset || lengthMoved || (siteKeyed && key !== record.key)) {
-      if (key !== record.key) {
-        if (record.closePrompt) record.closePrompt();
-        restore(record);
-        if (record.status === "applied") observerDirty = true;
-        record.status = "idle";
-        record.key = key;
-        record.cancelled = false;
-        record.asked = false;
-      }
+    const grown = video.duration - record.keyDuration;
+    const growing = !!record.key && !record.reset && grown > 0 && grown <= LIVE_GROWTH_S;
+    if (growing) record.keyDuration = video.duration;
+    const lengthMoved = !growing && Number.isFinite(video.duration) && !(Math.abs(grown) <= 1);
+    // A new source on the same page with the same length is the same video
+    // in another quality or from another server.
+    const sameVideo = record.reset && !!record.key && location.href === record.keyHref && Math.abs(grown) <= 1.5;
+    if (sameVideo) {
+      record.reset = false;
       record.keyDuration = video.duration;
+    } else if (!record.key || record.reset || lengthMoved || (siteKeyed && key !== record.key)) {
+      if (key !== record.key) changeKey(record, key);
+      record.keyDuration = video.duration;
+      record.keyHref = location.href;
       record.reset = false;
     }
 
-    if (!worthGuarding(video)) {
+    const applied = record.status === "applied";
+    if (!applied && !worthGuarding(record)) {
       if (record.adIdle) observerDirty = true;
       record.adIdle = false;
       setStatus(record, "idle");
       return;
     }
-    const container = findContainer(video);
+    // While guarded, the container never shrinks (a mini-player, a resize,
+    // the video briefly smaller than its box); it may only grow, e.g. to the
+    // fullscreen element.
+    let container = findContainer(video);
+    if (applied && record.container && record.container.isConnected && containsDeep(record.container, video) && !containsDeep(container, record.container)) {
+      container = record.container;
+    }
     if (inAd(record, container)) {
-      setStatus(record, "idle");
-      if (!record.adIdle || record.container !== container) observerDirty = true;
-      record.adIdle = true;
-      record.container = container;
+      if (!applied) {
+        // An ad before the video: nothing to protect yet.
+        if (!record.adIdle || record.container !== container) observerDirty = true;
+        record.adIdle = true;
+        record.container = container;
+        return;
+      }
+      // During an ad the guard stays on, but only for clocks that show the
+      // video's own length; the ad's own clocks are left alone.
+      if (!record.adMode) observerDirty = true;
+      record.adMode = true;
+      if (record.closePrompt) record.closePrompt();
+      rewriteRecord(record);
+      if (record.masked.size) unmask(record);
       return;
     }
+    if (record.adMode) observerDirty = true;
+    record.adMode = false;
     if (record.adIdle) observerDirty = true;
     record.adIdle = false;
+    if (applied && !worthGuarding(record)) {
+      setStatus(record, "idle");
+      return;
+    }
+    record.contentDuration = video.duration;
     if (record.cancelled || cancelledKeys.has(record.key)) {
       setStatus(record, "cancelled");
       return;
     }
 
-    const offset = VSG.offsetSeconds(record.key, salt, settings.minHours, settings.maxHours);
+    // A site's video id comes from the address, which may still name the
+    // previous video while the next one loads; mixing in the length keeps
+    // that video's offset from carrying over to the next one.
+    const seed = siteKeyed ? `${record.key}@len:${Math.round(record.keyDuration)}` : record.key;
+    const offset = VSG.offsetSeconds(seed, salt, settings.minHours, settings.maxHours);
+    // restore() and the rewrite below run in the same task, so nothing in
+    // between is painted.
     if (record.status === "applied" && (offset !== record.offset || container !== record.container)) restore(record);
     if (record.status !== "applied" || container !== record.container) observerDirty = true;
     record.offset = offset;
     record.container = container;
     record.status = "applied";
     rewriteRecord(record);
+    if (record.masked.size) unmask(record);
     hideProgress(record);
     maybeAsk(record);
+    reportStatus();
+  }
+
+  // A different video now plays in this element. Its fakes are dropped
+  // without writing the old real text back (that would show the previous
+  // video's length until the page redraws); the page overwrites them.
+  function changeKey(record, key) {
+    if (record.closePrompt) record.closePrompt();
+    removeFromQueue(record);
+    if (record.key) askedKeys.delete(record.key);
+    release(record);
+    if (record.status === "applied") observerDirty = true;
+    record.status = "idle";
+    record.key = key;
+    record.cancelled = false;
+    record.asked = false;
     reportStatus();
   }
 
@@ -433,6 +540,7 @@
     if (record.status === "applied" && status !== "applied") {
       if (record.closePrompt) record.closePrompt();
       restore(record);
+      unmask(record);
       observerDirty = true;
     }
     record.status = status;
@@ -452,6 +560,10 @@
   // ---- Rewriting ----------------------------------------------------------
 
   function clockContext(record) {
+    if (record.adMode) {
+      // Only the video's own length is known during an ad.
+      return { duration: record.contentDuration, offset: record.offset, currentTime: null, remainingUnsigned: false };
+    }
     return {
       duration: record.video.duration,
       offset: record.offset,
@@ -490,15 +602,20 @@
     const entry = record.texts.get(node);
     if (entry && current === entry.fake) return;
     if (claimedByOther(record, node, current)) return;
-    let next = VSG.rewriteClockText(current, ctx);
-    if (next === null && !ctx.remainingUnsigned && VSG.hasClock(current) && looksLikeRemaining(node)) {
-      next = VSG.rewriteClockText(current, { ...ctx, remainingUnsigned: true });
+    // A spot that showed time left before still does, even at the halfway
+    // point where time left and elapsed time read the same.
+    const spot = node.parentElement;
+    const knownRemaining = !!spot && record.remainingSpots.has(spot);
+    let result = VSG.rewriteClockDetailed(current, { ...ctx, knownRemaining });
+    if (result === null && !ctx.remainingUnsigned && VSG.hasClock(current) && looksLikeRemaining(node)) {
+      result = VSG.rewriteClockDetailed(current, { ...ctx, remainingUnsigned: true, knownRemaining: true });
     }
-    if (next === null) {
+    if (result === null) {
       if (entry) record.texts.delete(node);
       return;
     }
-    writeText(record, node, current, next);
+    if (result.remaining && spot) record.remainingSpots.add(spot);
+    writeText(record, node, current, result.text);
   }
 
   function rewriteAttr(record, el, name, ctx) {
@@ -586,20 +703,29 @@
     return label && (containsDeep(record.container, label) || record.outside.includes(label)) ? label : null;
   }
 
-  // Length labels that live outside the player container. A record keeps a
-  // label it has claimed; a new claim is only made when this is the page's
-  // only guarded video, so the label can't belong to another one.
+  // How close a label sits to a player: the depth of their nearest common
+  // ancestor (deeper is closer).
+  function closeness(label, container) {
+    const depths = new Map();
+    let depth = 0;
+    for (let n = label; n; n = parentDeep(n)) depths.set(n, depth++);
+    for (let n = container; n; n = parentDeep(n)) if (depths.has(n)) return depth - depths.get(n);
+    return -1;
+  }
+
+  // Length labels that live outside the player container. Each label belongs
+  // to the tracked player nearest to it in the page, so two players on one
+  // page each keep their own label. Claims are re-checked every few seconds.
   function outsideLabels(record) {
     const site = decision.site;
     if (!site || !site.durationSelector) return [];
-    const kept = record.outside.filter((l) => l.isConnected && !containsDeep(record.container, l));
-    if (kept.length) return kept;
     const now = Date.now();
-    if (now - record.outsideCheckedAt < OUTSIDE_LABEL_RECHECK_MS) return [];
+    const recheck = now - record.outsideCheckedAt >= OUTSIDE_LABEL_RECHECK_MS;
+    const kept = record.outside.filter((l) => l.isConnected && !containsDeep(record.container, l));
+    if (kept.length && !recheck) return kept;
+    if (!recheck) return [];
     record.outsideCheckedAt = now;
     if (queryRoots(rootsFor(record, record.container), site.durationSelector).length) return [];
-    const others = [...records.values()].filter((r) => r !== record && r.status === "applied");
-    if (others.length) return [];
     let found = [];
     try {
       found = [...document.querySelectorAll(site.durationSelector)];
@@ -607,7 +733,32 @@
       return [];
     }
     if (!found.length) found = queryAllDeep(document, site.durationSelector);
-    return found;
+    const players = [...records.values()].filter((r) => r.status !== "removed" && (r.container || r.video).isConnected);
+    return found.filter((label) => {
+      if (players.some((r) => r !== record && r.container && containsDeep(r.container, label))) return false;
+      return nearestPlayer(label, players) === record;
+    });
+  }
+
+  // The player a label belongs to: the one sharing its closest ancestor;
+  // on a tie, the nearest player before it in the page (a title or length
+  // line usually follows its player), else the first one.
+  function nearestPlayer(label, players) {
+    let best = [];
+    let bestCloseness = -1;
+    for (const r of players) {
+      const c = closeness(label, r.container || r.video);
+      if (c > bestCloseness) {
+        best = [r];
+        bestCloseness = c;
+      } else if (c === bestCloseness) {
+        best.push(r);
+      }
+    }
+    if (best.length < 2) return best[0] || null;
+    const before = best.filter((r) => (r.container || r.video).compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING);
+    if (!before.length) return best[0];
+    return before.reduce((a, b) => ((a.container || a.video).compareDocumentPosition(b.container || b.video) & Node.DOCUMENT_POSITION_FOLLOWING ? b : a));
   }
 
   function rewriteRecord(record) {
@@ -617,14 +768,70 @@
     for (const el of record.attrs.keys()) if (!el.isConnected) record.attrs.delete(el);
     const ctx = clockContext(record);
     rewriteSubtree(record, record.container, ctx);
-    const known = record.roots ? record.roots.length : 0;
     record.rootsAt = 0;
-    if (rootsFor(record, record.container).length !== known) observerDirty = true; // a shadow root appeared
+    const roots = rootsFor(record, record.container);
+    // A shadow root appeared (or went) since the observer was set up.
+    if (roots.length !== record.observed.length - record.outside.length || roots.some((r) => !record.observed.includes(r))) observerDirty = true;
     const outside = outsideLabels(record);
-    if (outside.length !== record.outside.length || outside.some((l, i) => l !== record.outside[i])) observerDirty = true;
+    if (outside.length !== record.outside.length || outside.some((l, i) => l !== record.outside[i])) {
+      observerDirty = true;
+      // Hand a dropped label back with its real text; the player it now
+      // belongs to rewrites it with its own offset in this same pass.
+      for (const label of record.outside) if (!outside.includes(label)) restoreWithin(record, label);
+    }
     record.outside = outside;
     for (const label of record.outside) rewriteSubtree(record, label, ctx);
-    for (const label of labelsOf(record)) rewriteLabel(record, label);
+    if (!record.adMode) for (const label of labelsOf(record)) rewriteLabel(record, label);
+  }
+
+  // Puts back the real text this record wrote inside one subtree, so
+  // another player can take that subtree over.
+  function restoreWithin(record, root) {
+    for (const [node, entry] of [...record.texts]) {
+      if (!containsDeep(root, node)) continue;
+      if (node.nodeValue === entry.fake) node.nodeValue = entry.original;
+      record.texts.delete(node);
+      if (textClaims.get(node) === record) textClaims.delete(node);
+    }
+  }
+
+  // Forgets every rewrite without writing the real text back. Used when the
+  // guard steps aside but will come back (an ad, a new video in the same
+  // element), where showing the real text in between would give it away.
+  function release(record) {
+    for (const node of record.texts.keys()) if (textClaims.get(node) === record) textClaims.delete(node);
+    record.texts.clear();
+    for (const [el, map] of record.attrs) {
+      const claims = attrClaims.get(el);
+      if (claims) for (const name of map.keys()) if (claims.get(name) === record) claims.delete(name);
+    }
+    record.attrs.clear();
+    record.outside = [];
+    record.outsideCheckedAt = 0;
+  }
+
+  // While a new source loads, the player may already print the next video's
+  // real length (it knows it from its own API) before the media reports it.
+  // Such clocks are hidden until the metadata arrives, then rewritten.
+  function maskWhileLoading(record, node) {
+    const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+    if (!el || record.masked.has(el)) return;
+    const clock = VSG.lastClock(node.nodeType === Node.TEXT_NODE ? node.nodeValue : el.textContent);
+    if (!clock || clock.value < Math.max(30, settings.minVideoMinutes * 60)) return; // "0:00" placeholders stay
+    const entry = node.nodeType === Node.TEXT_NODE && record.texts.get(node);
+    if (entry && entry.fake === node.nodeValue) return;
+    record.masked.set(el, { value: el.style.getPropertyValue("visibility"), priority: el.style.getPropertyPriority("visibility") });
+    el.style.setProperty("visibility", "hidden", "important");
+    if (!record.maskedAt || record.masked.size === 1) record.maskedAt = Date.now();
+  }
+
+  function unmask(record) {
+    for (const [el, prev] of record.masked) {
+      if (prev.value) el.style.setProperty("visibility", prev.value, prev.priority);
+      else el.style.removeProperty("visibility");
+    }
+    record.masked.clear();
+    record.maskedAt = 0;
   }
 
   function restore(record) {
@@ -709,12 +916,14 @@
     observerDirty = false;
     observer.disconnect();
     for (const record of records.values()) {
+      record.observed = [];
       if (!record.container || (record.status !== "applied" && !record.adIdle)) continue;
       const options = record.status === "applied" ? APPLIED_OPTIONS : AD_OPTIONS;
       record.rootsAt = 0; // pick up shadow roots attached since the last walk
       const roots = rootsFor(record, record.container).slice();
       if (record.status === "applied") roots.push(...record.outside);
       for (const root of roots) observer.observe(root, options);
+      record.observed = roots;
     }
   }
 
@@ -722,19 +931,71 @@
     if (observerDirty) rebuildObserver();
   }
 
-  // The record a changed node belongs to: the one that wrote its fake, else
-  // the innermost player container that holds it.
-  function ownerOf(node) {
+  // The records a changed node may belong to, best first: the one that wrote
+  // its fake, then players holding it from the innermost out. Players that
+  // share one container are all included, the one already showing fakes
+  // first, so a hidden ad or preload video can't take a label update away
+  // from the video it belongs to.
+  function ownersOf(node) {
     const claimed = textClaims.get(node);
-    if (claimed && claimed.status === "applied") return claimed;
-    let best = null;
+    if (claimed && claimed.status === "applied") return [claimed];
+    const holders = [];
     for (const record of records.values()) {
       if (!record.container || (record.status !== "applied" && !record.adIdle)) continue;
       const holds = containsDeep(record.container, node) || (record.status === "applied" && record.outside.some((l) => containsDeep(l, node)));
-      if (!holds) continue;
-      if (!best || containsDeep(best.container, record.container)) best = record;
+      if (holds) holders.push(record);
     }
-    return best;
+    if (holders.length < 2) return holders;
+    const depth = (r) => {
+      let d = 0;
+      for (let n = r.container; n; n = parentDeep(n)) d++;
+      return d;
+    };
+    return holders.sort((a, b) => depth(b) - depth(a) || Number(rewrote(b)) - Number(rewrote(a)));
+  }
+
+  function handleMutation(record, m, reevaluate, progress) {
+    if (record.status !== "applied") {
+      reevaluate.add(record); // an ad marker may have gone away
+      return;
+    }
+    if (m.type === "attributes" && m.attributeName === "class") {
+      if (decision.site.adSelector) reevaluate.add(record); // an ad may have started
+      return;
+    }
+    // A source is loading: hide any length the player prints until the
+    // media's own length is known.
+    if (Number.isNaN(record.video.duration) || record.video.readyState === 0) {
+      if (m.type === "characterData") maskWhileLoading(record, m.target);
+      else if (m.type === "childList") {
+        for (const added of m.addedNodes) {
+          if (added.nodeType === Node.TEXT_NODE) maskWhileLoading(record, added);
+          else if (added.nodeType === Node.ELEMENT_NODE) walkTextNodes(added, (n) => maskWhileLoading(record, n));
+        }
+      }
+      return;
+    }
+    const ctx = clockContext(record);
+    if (m.type === "characterData") {
+      rewriteText(record, m.target, ctx);
+    } else if (m.type === "attributes") {
+      rewriteAttr(record, m.target, m.attributeName, ctx);
+    } else {
+      for (const added of m.addedNodes) {
+        rewriteSubtree(record, added, ctx);
+        if (added.nodeType === Node.ELEMENT_NODE) {
+          walkElements(added, (el) => {
+            if (el.shadowRoot) observerDirty = true;
+          });
+          if (!record.adMode) for (const label of queryAllDeep(added, decision.site.durationSelector)) rewriteLabel(record, label);
+        }
+      }
+      if (m.addedNodes.length && decision.site.hideProgress) progress.add(record);
+    }
+    if (m.type !== "attributes" && !record.adMode) {
+      const label = labelContaining(record, m.target);
+      if (label) rewriteLabel(record, label);
+    }
   }
 
   // Runs as a microtask after the page changes the DOM and before the next
@@ -744,40 +1005,11 @@
     const reevaluate = new Set();
     const progress = new Set();
     for (const m of mutations) {
-      const record = ownerOf(m.target);
-      if (!record) continue;
-      if (record.status !== "applied") {
-        reevaluate.add(record); // an ad marker may have gone away
-        continue;
-      }
-      if (m.type === "attributes" && m.attributeName === "class") {
-        if (decision.site.adSelector) reevaluate.add(record); // an ad may have started
-        continue;
-      }
-      const ctx = clockContext(record);
-      if (m.type === "characterData") {
-        rewriteText(record, m.target, ctx);
-      } else if (m.type === "attributes") {
-        rewriteAttr(record, m.target, m.attributeName, ctx);
-      } else {
-        for (const added of m.addedNodes) {
-          rewriteSubtree(record, added, ctx);
-          if (added.nodeType === Node.ELEMENT_NODE) {
-            walkElements(added, (el) => {
-              if (shadowOf(el)) observerDirty = true;
-            });
-            for (const label of queryAllDeep(added, decision.site.durationSelector)) rewriteLabel(record, label);
-          }
-        }
-        if (m.addedNodes.length && decision.site.hideProgress) progress.add(record);
-      }
-      if (m.type !== "attributes") {
-        const label = labelContaining(record, m.target);
-        if (label) rewriteLabel(record, label);
-      }
+      for (const record of ownersOf(m.target)) handleMutation(record, m, reevaluate, progress);
     }
     for (const record of reevaluate) {
-      if (record.status === "applied" && !inAd(record, record.container)) continue;
+      // Only an ad starting or ending matters here.
+      if (record.status === "applied" && inAd(record, record.container) === !!record.adMode) continue;
       evaluate(record);
     }
     for (const record of progress) hideProgress(record);
@@ -795,11 +1027,11 @@
     const video = event.target;
     if (!(video instanceof HTMLVideoElement)) return;
     if (!active() && !records.has(video)) return;
+    if (!records.has(video)) resetScanBackoff();
     const record = track(video);
     if (event.type === "emptied" || event.type === "loadstart") {
       // A new source: keep the fakes on screen until its metadata arrives.
       record.reset = true;
-      if (record.closePrompt) record.closePrompt(true);
       return;
     }
     evaluate(record);
@@ -814,16 +1046,92 @@
     for (const type of MEDIA_EVENTS) root.addEventListener(type, onMediaEvent, true);
   }
 
-  function discover(deep) {
-    const found = new Set(document.querySelectorAll("video"));
-    if (deep && document.documentElement) {
-      const shadows = [];
-      walkElements(document.documentElement, (el) => {
-        if (el.tagName === "VIDEO") found.add(el);
-      }, shadows);
-      shadows.forEach(watchRoot);
+  // Videos in the light DOM are found cheaply on every tick. Finding videos
+  // inside shadow roots means walking the whole page, so that walk is cut
+  // into slices of a few milliseconds (no long tasks on huge pages) and runs
+  // less and less often, up to every 30 s, while it keeps finding nothing.
+  const SCAN_SLICE_MS = 4;
+  const SCAN_MIN_GAP_MS = 2000;
+  const SCAN_MAX_GAP_MS = 30000;
+  let deepScan = null; // { stack, videos, shadows }
+  let scanGap = SCAN_MIN_GAP_MS;
+  let nextScanAt = 0;
+  let scanTimer = 0;
+
+  function resetScanBackoff() {
+    scanGap = SCAN_MIN_GAP_MS;
+    nextScanAt = 0;
+  }
+
+  function startDeepScan() {
+    if (deepScan || stopped || document.hidden || !document.documentElement) return;
+    deepScan = { stack: [document.documentElement], videos: [], shadows: [] };
+    scanSlice();
+  }
+
+  function scheduleSlice() {
+    if (typeof requestIdleCallback === "function") scanTimer = requestIdleCallback(scanSlice, { timeout: 250 });
+    else scanTimer = setTimeout(scanSlice, 16);
+  }
+
+  function scanSlice() {
+    scanTimer = 0;
+    const scan = deepScan;
+    if (!scan || stopped) return;
+    const end = performance.now() + SCAN_SLICE_MS;
+    let visited = 0;
+    while (scan.stack.length) {
+      if ((++visited & 127) === 0 && performance.now() > end) {
+        scheduleSlice();
+        return;
+      }
+      const node = scan.stack.pop();
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        if (node.tagName === "VIDEO") scan.videos.push(node);
+        const shadow = shadowOf(node);
+        if (shadow) {
+          scan.shadows.push(shadow);
+          scan.stack.push(shadow);
+        }
+      }
+      for (let child = node.lastElementChild; child; child = child.previousElementSibling) scan.stack.push(child);
     }
-    for (const video of found) track(video);
+    deepScan = null;
+    let found = 0;
+    for (const root of scan.shadows) {
+      if (!watchedRoots.has(root)) found++;
+      watchRoot(root);
+    }
+    for (const video of scan.videos) {
+      if (!video.isConnected || records.has(video)) continue;
+      track(video);
+      found++;
+    }
+    scanGap = found ? SCAN_MIN_GAP_MS : Math.min(scanGap * 2, SCAN_MAX_GAP_MS);
+    nextScanAt = Date.now() + scanGap;
+    if (found && active()) evaluateAll();
+  }
+
+  function stopDeepScan() {
+    if (scanTimer) {
+      if (typeof cancelIdleCallback === "function") cancelIdleCallback(scanTimer);
+      clearTimeout(scanTimer);
+    }
+    scanTimer = 0;
+    deepScan = null;
+  }
+
+  function discoverLight() {
+    for (const video of document.querySelectorAll("video")) track(video);
+  }
+
+  function onUrlChange() {
+    if (location.href === lastHref) return;
+    lastHref = location.href;
+    lastReported = null;
+    resetScanBackoff();
+    evaluateAll();
+    reportStatus();
   }
 
   function tick() {
@@ -831,18 +1139,12 @@
       shutdown();
       return;
     }
-    tickCount++;
-    if (location.href !== lastHref) {
-      lastHref = location.href;
-      lastReported = null;
-      evaluateAll();
-      reportStatus();
-    }
+    onUrlChange();
     if (!active()) return;
-    discover(tickCount % DEEP_SCAN_EVERY === 0 && !document.hidden);
+    discoverLight();
+    if (Date.now() >= nextScanAt) startDeepScan();
     for (const record of [...records.values()]) {
-      if (record.video.readyState >= 1 || record.status === "applied") evaluate(record);
-      else if (!record.video.isConnected) untrack(record);
+      if (record.video.readyState >= 1 || record.status === "applied" || !record.video.isConnected) evaluate(record);
     }
     flushObserver();
   }
@@ -858,7 +1160,7 @@
 
   function maybeAsk(record) {
     if (!shouldAsk() || record.status !== "applied") return;
-    if (record.video.paused || record.asked || askedKeys.has(record.key)) return;
+    if (record.video.paused || record.asked || askedKeys.has(record.key) || promptQueue.includes(record)) return;
     if (!rewrote(record)) return; // nothing on screen changed, e.g. built-in browser controls
     if (!bigEnough(record.video) && !inKnownPlayer(record.video)) return;
     record.asked = true;
@@ -867,12 +1169,36 @@
     showNextPrompt();
   }
 
+  function removeFromQueue(record) {
+    const at = promptQueue.indexOf(record);
+    if (at >= 0) promptQueue.splice(at, 1);
+  }
+
   function forgetAsked(record) {
     record.asked = false;
     askedKeys.delete(record.key);
   }
 
+  // A dialog waits while its tab is in the background, so its countdown
+  // can't run out before the user has seen it.
+  let waitingForVisible = false;
+  function showWhenVisible() {
+    if (waitingForVisible) return;
+    waitingForVisible = true;
+    const onVisible = () => {
+      if (document.hidden) return;
+      document.removeEventListener("visibilitychange", onVisible);
+      waitingForVisible = false;
+      showNextPrompt();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+  }
+
   function showNextPrompt() {
+    if (document.hidden && promptQueue.length && !promptOpen) {
+      showWhenVisible();
+      return;
+    }
     while (!promptOpen && promptQueue.length) {
       const record = promptQueue.shift();
       if (record.status !== "applied") {
@@ -905,7 +1231,8 @@
     const listed = decision.listed;
     let write;
     if (listed) write = cancelled ? Store.setSiteEnabled(listed, false) : Store.setSiteAsk(listed, false);
-    else write = Store.setCustomSite(TOP_HOST, { enabled: !cancelled, ask: false });
+    // Keep the protection the site had while it was auto-detected.
+    else write = Store.setCustomSite(TOP_HOST, { enabled: !cancelled, ask: false, hideProgress: !!(decision.site && decision.site.hideProgress) });
     write.catch(() => {
       // Storage refused the write (quota); the dialog is already gone.
     });
@@ -914,11 +1241,12 @@
   function rememberLabel() {
     const listed = decision.listed;
     if (listed) return listed.builtIn ? listed.name : listed.domains[0];
-    return VSG.normalizeDomain(TOP_HOST) || "";
+    return VSG.normalizeDomain(TOP_HOST, { allowSingleLabel: true }) || "";
   }
 
   const PROMPT_CSS = `
     :host { all: initial; }
+    [hidden] { display: none !important; }
     dialog {
       --bg: #ffffff; --fg: #1b1f27; --muted: #5b6474; --line: #d9dde5; --accent: #5b3fd6; --accent-fg: #ffffff;
       box-sizing: border-box; width: min(400px, calc(100vw - 24px)); max-width: none; max-height: calc(100vh - 16px);
@@ -1010,6 +1338,7 @@
       clearInterval(timer);
       clearInterval(watch);
       document.removeEventListener("fullscreenchange", onFullscreen, true);
+      document.removeEventListener("visibilitychange", onVisibility);
       try {
         dialog.close();
       } catch {
@@ -1018,12 +1347,16 @@
       host.remove();
       done({ cancel: cancelled, remember: !interrupted && box.checked && !!where, interrupted });
     };
-    if (left > 0) {
+    const startCountdown = () => {
       timer = setInterval(() => {
         left--;
         if (left <= 0) finish(false);
         else label();
       }, 1000);
+    };
+    if (left > 0) {
+      if (document.hidden) timer = -1;
+      else startCountdown();
     }
     // The page may remove our element (a framework re-rendering <html>), which
     // closes the dialog without any event.
@@ -1035,13 +1368,28 @@
     // isn't cut off.
     const stopCountdown = () => {
       if (!timer) return;
-      clearInterval(timer);
+      if (timer !== -1) clearInterval(timer);
       timer = 0;
       left = 0;
       label();
     };
     dialog.addEventListener("keydown", stopCountdown);
     dialog.addEventListener("pointerdown", stopCountdown);
+    // Keys used in the dialog must not reach the page's shortcuts (Space
+    // would also pause the video, arrows would seek it).
+    for (const type of ["keydown", "keyup", "keypress"]) dialog.addEventListener(type, (e) => e.stopPropagation());
+    // The countdown only runs while the tab is visible.
+    const onVisibility = () => {
+      if (!timer && left <= 0) return;
+      if (document.hidden) {
+        clearInterval(timer);
+        timer = -1; // paused
+      } else if (timer === -1) {
+        timer = 0;
+        startCountdown();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
     cancel.addEventListener("click", () => finish(true));
     keep.addEventListener("click", () => finish(false));
     // Escape dismisses the dialog, which leaves the guard on.
@@ -1052,15 +1400,18 @@
     // Closing because the guard was withdrawn writes nothing.
     record.closePrompt = (interrupted = true) => finish(false, interrupted);
 
-    // Someone typing keeps their focus; the dialog then opens beside the page
-    // instead of blocking it.
-    const modal = !isEditable(document.activeElement);
+    // The dialog only takes focus when this frame has it and nobody is
+    // typing; otherwise (a field in use, or focus in another frame of the
+    // page) it opens beside the page without taking keystrokes.
+    const modal = document.hasFocus() && !isEditable(document.activeElement);
+    // show() would move focus into the dialog, so a non-modal dialog is
+    // opened by setting its attribute, which leaves focus where it is.
     const show = () => {
       try {
         if (modal) dialog.showModal();
-        else dialog.show();
+        else dialog.setAttribute("open", "");
       } catch {
-        dialog.show();
+        dialog.setAttribute("open", "");
       }
     };
     // A dialog opened before the video went fullscreen would sit under it.
@@ -1108,7 +1459,11 @@
         const wasActive = active();
         settings = loaded;
         decision = computeDecision();
-        if (!wasActive && active()) discover(true);
+        if (!wasActive && active()) {
+          discoverLight();
+          resetScanBackoff();
+          startDeepScan();
+        }
         evaluateAll();
         startTicking();
       })
@@ -1124,6 +1479,17 @@
     if (event.persisted) reportStatus();
   }
 
+  // Coming back to the tab rescans soon, since the page may have changed.
+  function onVisibilityChange() {
+    if (document.hidden || !active()) return;
+    resetScanBackoff();
+  }
+
+  // The Navigation API reports pushState/replaceState as they happen, so a
+  // new address is seen before the next video's metadata, not up to a
+  // second later.
+  const navigationApi = globalThis.navigation;
+
   // Puts every page back the way it was. Used when this copy is orphaned by
   // an extension update or removal.
   function shutdown() {
@@ -1131,10 +1497,13 @@
     for (const record of [...records.values()]) untrack(record);
     stopped = true;
     clearInterval(tickTimer);
+    stopDeepScan();
     observer.disconnect();
     for (const type of MEDIA_EVENTS) document.removeEventListener(type, onMediaEvent, true);
     removeEventListener("pagehide", onPageHide);
     removeEventListener("pageshow", onPageShow);
+    document.removeEventListener("visibilitychange", onVisibilityChange);
+    if (navigationApi) navigationApi.removeEventListener("currententrychange", onUrlChange);
     try {
       chromeApi.storage.onChanged.removeListener(onStorageChange);
     } catch {
@@ -1151,13 +1520,16 @@
   for (const type of MEDIA_EVENTS) document.addEventListener(type, onMediaEvent, true);
   addEventListener("pagehide", onPageHide);
   addEventListener("pageshow", onPageShow);
+  document.addEventListener("visibilitychange", onVisibilityChange);
+  if (navigationApi && navigationApi.addEventListener) navigationApi.addEventListener("currententrychange", onUrlChange);
   chromeApi.storage.onChanged.addListener(onStorageChange);
 
   loadState()
     .then(() => {
       startTicking();
       if (active()) {
-        discover(true);
+        discoverLight();
+        startDeepScan();
         evaluateAll();
       }
     })

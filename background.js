@@ -25,32 +25,58 @@ chrome.runtime.onInstalled.addListener(async ({ reason }) => {
   }
 });
 
-// tabId -> Set of frameIds currently guarding a video. Lost when the worker
-// sleeps, which only matters if a tab has several guarding frames.
-const guardingFrames = new Map();
+// Which frames of each tab are guarding a video, kept in session storage
+// because the service worker is stopped when idle and would forget a Map.
+const badgeKey = (tabId) => `badge:${tabId}`;
 
-function paintBadge(tabId) {
-  const on = (guardingFrames.get(tabId) || new Set()).size > 0;
+async function guardingFrames(tabId) {
+  const stored = (await chrome.storage.session.get(badgeKey(tabId)))[badgeKey(tabId)];
+  return new Set(Array.isArray(stored) ? stored : []);
+}
+
+async function saveFrames(tabId, frames) {
+  if (frames.size) await chrome.storage.session.set({ [badgeKey(tabId)]: [...frames] });
+  else await chrome.storage.session.remove(badgeKey(tabId));
+}
+
+function paintBadge(tabId, on) {
   chrome.action.setBadgeText({ tabId, text: on ? "ON" : "" }).catch(() => {});
   if (on) chrome.action.setBadgeBackgroundColor({ tabId, color: "#5b3fd6" }).catch(() => {});
+}
+
+// Reports from one tab are applied one after another, so two frames
+// reporting at once can't overwrite each other's update.
+const queues = new Map();
+function inOrder(tabId, work) {
+  const next = (queues.get(tabId) || Promise.resolve()).then(work, work);
+  queues.set(tabId, next.catch(() => {}));
+  return next;
 }
 
 chrome.runtime.onMessage.addListener((message, sender) => {
   if (!message || message.type !== "vsg-status" || !sender.tab) return;
   const tabId = sender.tab.id;
-  const frames = guardingFrames.get(tabId) || new Set();
-  if (message.guarding) frames.add(sender.frameId);
-  else frames.delete(sender.frameId);
-  guardingFrames.set(tabId, frames);
-  paintBadge(tabId);
+  inOrder(tabId, async () => {
+    const frames = await guardingFrames(tabId);
+    if (message.guarding) frames.add(sender.frameId);
+    else frames.delete(sender.frameId);
+    await saveFrames(tabId, frames);
+    paintBadge(tabId, frames.size > 0);
+  }).catch(() => {});
 });
 
-chrome.tabs.onRemoved.addListener((tabId) => guardingFrames.delete(tabId));
+chrome.tabs.onRemoved.addListener((tabId) => {
+  inOrder(tabId, () => chrome.storage.session.remove(badgeKey(tabId)))
+    .catch(() => {})
+    .finally(() => queues.delete(tabId));
+});
 
 // A new page in the tab starts with no guarded frames; content scripts
 // report again after loads and same-page navigations.
 chrome.tabs.onUpdated.addListener((tabId, change) => {
   if (change.status !== "loading") return;
-  guardingFrames.delete(tabId);
-  paintBadge(tabId);
+  inOrder(tabId, async () => {
+    await chrome.storage.session.remove(badgeKey(tabId));
+    paintBadge(tabId, false);
+  }).catch(() => {});
 });

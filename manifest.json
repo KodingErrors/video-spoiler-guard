@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Video Spoiler Guard",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "description": "Adds a random 2-6 hours of fake time to video lengths on YouTube, Twitch and other sites, so you can't tell how close the end is.",
   "minimum_chrome_version": "116",
   "icons": {

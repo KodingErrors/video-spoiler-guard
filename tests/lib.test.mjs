@@ -207,3 +207,28 @@ test("lastClock finds the last clock and where it is", () => {
   assert.equal(c.index, 7);
   assert.equal(VSG.lastClock("LIVE"), null);
 });
+
+test("at the halfway point an elapsed clock is never mistaken for time left", () => {
+  const at = { duration: 3725, offset: 12345, currentTime: 1862.3, remainingUnsigned: true };
+  // "elapsed / remaining" (Prime Video): only the last clock is time left.
+  assert.equal(VSG.rewriteClockText("31:02 / 31:03", at), "31:02 / 3:56:48");
+  // A lone clock that could be either is left alone...
+  assert.equal(VSG.rewriteClockText("31:02", at), null);
+  // ...unless that spot is known to show time left.
+  assert.equal(VSG.rewriteClockText("31:02", { ...at, knownRemaining: true }), "3:56:47");
+  // Away from the midpoint nothing changes.
+  const early = { ...at, currentTime: 600 };
+  assert.equal(VSG.rewriteClockText("10:00 / 52:05", early), "10:00 / 4:17:50");
+  assert.equal(VSG.rewriteClockText("52:05", early), "4:17:50");
+  assert.equal(VSG.rewriteClockDetailed("52:05", early).remaining, true);
+  assert.equal(VSG.rewriteClockDetailed("1:02:05", early).remaining, false);
+});
+
+test("single-word hosts are accepted from page addresses but not when typed", () => {
+  assert.equal(VSG.normalizeDomain("jellyfin"), null);
+  assert.equal(VSG.normalizeDomain("jellyfin", { allowSingleLabel: true }), "jellyfin");
+  assert.equal(VSG.normalizeDomain("http://jellyfin:8096/web/", { allowSingleLabel: true }), "jellyfin");
+  assert.equal(VSG.normalizeDomain("media_server.lan"), "media_server.lan");
+  const s = VSG.normalizeSettings({ "site:jellyfin": { enabled: false } });
+  assert.equal(VSG.decide(s, "jellyfin").mode, "off");
+});

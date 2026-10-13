@@ -21,8 +21,9 @@ Works in Chrome 116 or newer, and in other Chromium browsers (Edge, Brave, Opera
 Click the toolbar button to open the popup:
 
 - **This site**: On, Off or Default for the site in the current tab. Default
-  hands an added site back to auto-detect. When the site is on, you can also
-  choose whether it shows the dialog.
+  removes the site's own entry, so a parent entry (for example YouTube, for
+  gaming.youtube.com) or auto-detect applies instead; the button says which.
+  When the site is on, you can also choose whether it shows the dialog.
 - **Auto-detect all video playbacks and automatically apply**: when a video
   starts playing on any site that isn't switched off, the guard turns on and a
   dialog appears in the page. Choose **Cancel** to see the real length for
@@ -59,10 +60,15 @@ The content script reads the real length from the `<video>` element and
 rewrites any clock in the player that shows it (for example `0:12:34 / 1:02:05`
 becomes `0:12:34 / 4:39:51`), along with time-remaining clocks such as
 `-49:31`. It reacts to the player's own updates before the browser paints, so
-the real length never flashes, including while a player reloads its video or
-switches quality. For the built-in sites it also knows each player's own length
-label, progress bar and ad markers. During an ad it steps aside and comes back
-when the video resumes. Turning the guard off puts the original text back.
+the real length never flashes, including while a player reloads its video,
+switches quality, moves the video into a mini-player or goes fullscreen. For the
+built-in sites it also knows each player's own length label, progress bar and
+ad markers; during an ad it leaves the ad's own clock alone. Turning the guard
+off puts the original text back.
+
+Finding players inside web components means walking the page, so that walk runs
+in slices of a few milliseconds and less often (up to every 30 seconds) on pages
+where it keeps finding nothing, so large pages don't stutter.
 
 The fake time for each video comes from a hash of the video's ID and a random
 value stored only on your computer. Nothing is sent anywhere. The extension has
@@ -90,6 +96,7 @@ no network code.
 ## Tests
 
 ```sh
-node --test tests/*.test.mjs          # pure logic
-NODE_PATH="$(npm root -g)" node tests/e2e.cjs   # real Chromium; needs Playwright and ffmpeg
+node --test tests/*.test.mjs                                # pure logic
+NODE_PATH="$(npm root -g)" node tests/e2e.cjs               # real Chromium; needs Playwright and ffmpeg
+NODE_PATH="$(npm root -g)" node tests/e2e-regressions.cjs   # one check per problem found in review
 ```

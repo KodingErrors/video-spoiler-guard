@@ -67,7 +67,7 @@
     const [lo, hi] = VSG.LIMITS.hours;
     if (![min, max].every((n) => Number.isFinite(n) && n >= lo && n <= hi)) {
       error.textContent = `Enter hours from ${lo} to ${hi}.`;
-      renderNumbers();
+      renderNumbers(true);
       return;
     }
     if (min > max) {
@@ -76,13 +76,13 @@
     }
     if (max === 0) {
       error.textContent = "The most fake time has to be more than 0 hours.";
-      renderNumbers();
+      renderNumbers(true);
       return;
     }
     if (min === settings.minHours && max === settings.maxHours) return;
     Store.setGlobal({ minHours: min, maxHours: max }).catch((err) => {
       reportError(error, err);
-      renderNumbers();
+      renderNumbers(true);
     });
   });
   for (const [id, end] of [["min-hours", "min"], ["max-hours", "max"]]) {
@@ -142,6 +142,9 @@
           spellcheck: "false",
           value,
           onchange: (e) => {
+            // A field removed by a re-render fires "change"; its text lives
+            // on in the new field, which saves it when the user is done.
+            if (!e.target.isConnected) return;
             const selector = e.target.value.trim();
             if (selector && !validSelector(selector)) {
               reportError(errorTarget, new Error(`"${selector}" isn't a valid CSS selector.`));
@@ -176,7 +179,27 @@
     }
   }
 
+  // While a selector is being typed, the list waits to re-render until the
+  // field is left, so the text isn't saved half-typed or moved around.
+  let renderWhenDone = false;
+  function typingInList() {
+    const active = document.activeElement;
+    return !!active && $("sites").contains(active) && active.tagName === "INPUT" && active.type === "text";
+  }
+  $("sites").addEventListener("focusout", () => {
+    if (!renderWhenDone) return;
+    setTimeout(() => {
+      if (typingInList()) return;
+      renderWhenDone = false;
+      renderSites();
+    });
+  });
+
   function renderSites() {
+    if (typingInList()) {
+      renderWhenDone = true;
+      return;
+    }
     const query = $("filter").value.trim().toLowerCase();
     const sites = VSG.resolveSites(settings).filter(
       (s) => !query || s.name.toLowerCase().includes(query) || s.domains.some((d) => d.includes(query)),
@@ -188,10 +211,11 @@
     });
   }
 
-  function renderNumbers() {
+  // `force` resets even the focused field, after a value was rejected.
+  function renderNumbers(force = false) {
     for (const [id, key] of [["confirm-seconds", "confirmSeconds"], ["min-video-minutes", "minVideoMinutes"], ["min-hours", "minHours"], ["max-hours", "maxHours"]]) {
       // Don't overwrite a number the user is in the middle of typing.
-      if (document.activeElement !== $(id)) $(id).value = settings[key];
+      if (force || document.activeElement !== $(id)) $(id).value = settings[key];
     }
   }
 

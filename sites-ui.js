@@ -30,8 +30,11 @@
     target.textContent = error && error.message ? error.message : "That change couldn't be saved. Try again.";
   }
 
+  // A unique, id-safe form of a site's key: every character other than a
+  // letter or digit becomes "_" plus its code, so "my-site.com" and
+  // "my.site.com" never share an id.
   function slug(site) {
-    return site.key.replace(/[^a-z0-9]+/gi, "-");
+    return site.key.replace(/[^a-z0-9]/gi, (c) => "_" + c.charCodeAt(0).toString(16));
   }
 
   // One row of the site list: name, domains and an on/off switch, plus a
@@ -70,10 +73,13 @@
     const domain = VSG.normalizeDomain(input);
     if (!domain) return "Enter a site such as example.com.";
     const sites = VSG.resolveSites(settings);
-    const exact = sites.find((s) => s.domains.includes(domain));
-    if (exact && exact.builtIn) {
-      if (!exact.enabled) await Store.setSiteEnabled(exact, true);
-      return `${exact.name} is already in the list${exact.enabled ? "" : ", and it's now on"}.`;
+    // A built-in site already covers its subdomains (m.youtube.com,
+    // clips.twitch.tv); a separate entry would lose its player knowledge.
+    const covering = VSG.findSite(sites, domain);
+    if (covering && covering.builtIn) {
+      if (!covering.enabled) await Store.setSiteEnabled(covering, true);
+      const what = covering.domains.includes(domain) ? "is already in the list" : `already covers ${domain}`;
+      return `${covering.name} ${what}${covering.enabled ? "" : ", and it's now on"}.`;
     }
     await Store.setCustomSite(domain, { enabled: true, ...patch });
     return "";
@@ -87,6 +93,10 @@
     const active = document.activeElement;
     const inList = active && list.contains(active);
     const focusedId = inList ? active.id : null;
+    // Text being typed survives the re-render, caret included.
+    const typing = inList && active.tagName === "INPUT" && active.type === "text"
+      ? { value: active.value, start: active.selectionStart, end: active.selectionEnd }
+      : null;
     const rows = [...list.querySelectorAll("li[data-key]")];
     const focusedRow = inList ? rows.findIndex((li) => li.contains(active)) : -1;
     const open = new Set(rows.filter((li) => li.querySelector("details[open]")).map((li) => li.dataset.key));
@@ -100,6 +110,10 @@
     if (!inList) return;
     const again = focusedId && document.getElementById(focusedId);
     if (again) {
+      if (typing) {
+        again.value = typing.value;
+        again.setSelectionRange(typing.start, typing.end);
+      }
       again.focus();
       return;
     }

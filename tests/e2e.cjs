@@ -357,10 +357,10 @@ async function main() {
   await check("Popup keeps keyboard focus on a switch after toggling it", async () => {
     const popup = await context.newPage();
     await popup.goto(`chrome-extension://${extId}/popup.html`);
-    await popup.focus("#site-builtin-twitch");
+    await popup.focus("#site-builtin_3atwitch");
     await popup.keyboard.press("Space");
     await popup.waitForTimeout(300);
-    assert.equal(await popup.evaluate(() => document.activeElement.id), "site-builtin-twitch");
+    assert.equal(await popup.evaluate(() => document.activeElement.id), "site-builtin_3atwitch");
     await popup.keyboard.press("Space");
     await popup.close();
   });

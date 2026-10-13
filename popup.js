@@ -46,6 +46,21 @@
     }
   }
 
+  // What "Default" leads to: removing an added entry hands the host to a
+  // parent entry if there is one (e.g. YouTube for gaming.youtube.com),
+  // otherwise to auto-detect.
+  function defaultLabel(site) {
+    let fallback = settings;
+    if (site && !site.builtIn) {
+      fallback = { ...settings, customSites: settings.customSites.filter((c) => c.domain !== site.domains[0]) };
+    }
+    const result = VSG.decide(fallback, host);
+    if (result.mode === "auto") return "Default (ask)";
+    if (result.mode === "none") return "Default (off)";
+    const name = result.site.builtIn ? result.site.name : result.site.domains[0];
+    return `Default (${name}: ${result.mode})`;
+  }
+
   function renderHere() {
     $("here").hidden = !host;
     $("here-unsupported").hidden = !!host;
@@ -64,7 +79,7 @@
     // Built-in sites are always listed, so they are only on or off. The third
     // choice removes an added site, which hands it back to auto-detect.
     $("here-auto-wrap").hidden = !!(site && site.builtIn);
-    $("here-auto-label").textContent = settings.autoDetect ? "Default (ask)" : "Default (off)";
+    $("here-auto-label").textContent = defaultLabel(site);
     const value = site ? (site.enabled ? "on" : "off") : "auto";
     for (const input of document.querySelectorAll('input[name="here"]')) input.checked = input.value === value;
     // The dialog option only matters for a listed site that is on.
@@ -94,12 +109,21 @@
     if (choice === "auto") write = site && !site.builtIn ? Store.removeCustomSite(site.domains[0]) : Promise.resolve();
     else if (site) write = Store.setSiteEnabled(site, choice === "on");
     else write = Store.setCustomSite(host, { enabled: choice === "on" });
-    write.catch((err) => reportError(errorBox, err));
+    $("here-error").textContent = "";
+    write.catch((err) => {
+      reportError($("here-error"), err);
+      renderHere(); // put the choice back to what is actually saved
+    });
   });
 
   $("here-ask").addEventListener("change", (e) => {
     const site = host && VSG.findSite(VSG.resolveSites(settings), host);
-    if (site) Store.setSiteAsk(site, e.target.checked).catch((err) => reportError(errorBox, err));
+    if (site) {
+      Store.setSiteAsk(site, e.target.checked).catch((err) => {
+        reportError($("here-error"), err);
+        renderHere();
+      });
+    }
   });
 
   $("auto-detect").addEventListener("change", (e) => {
