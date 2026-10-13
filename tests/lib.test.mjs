@@ -232,3 +232,20 @@ test("single-word hosts are accepted from page addresses but not when typed", ()
   const s = VSG.normalizeSettings({ "site:jellyfin": { enabled: false } });
   assert.equal(VSG.decide(s, "jellyfin").mode, "off");
 });
+
+test("a session choice overrides the site until the browser closes", () => {
+  const s = VSG.normalizeSettings({});
+  const choices = { "youtube.com": { guard: true }, "example.org": { guard: false } };
+  const yt = VSG.applySessionChoice(VSG.decide(s, "www.youtube.com"), VSG.sessionChoiceFor(choices, "www.youtube.com"));
+  assert.equal(yt.mode, "on");
+  assert.equal(yt.site.ask, false, "no dialog for the rest of the session");
+  assert.equal(yt.site.id, "youtube", "keeps the site's player knowledge");
+  const ex = VSG.applySessionChoice(VSG.decide(s, "videos.example.org"), VSG.sessionChoiceFor(choices, "videos.example.org"));
+  assert.equal(ex.mode, "off");
+  // A site switched off stays off; auto-detect off leaves unlisted sites alone.
+  const off = VSG.normalizeSettings({ "builtin:youtube": { enabled: false } });
+  assert.equal(VSG.applySessionChoice(VSG.decide(off, "www.youtube.com"), { guard: true }).mode, "off");
+  const none = VSG.normalizeSettings({ autoDetect: false });
+  assert.equal(VSG.applySessionChoice(VSG.decide(none, "example.net"), { guard: true }).mode, "none");
+  assert.equal(VSG.sessionChoiceFor(choices, "twitch.tv"), null);
+});

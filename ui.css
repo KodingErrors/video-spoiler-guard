@@ -127,6 +127,10 @@ body.popup { width: 360px; }
 .popup .host { font-weight: 700; overflow-wrap: anywhere; }
 .popup .site-list { max-height: 260px; overflow-y: auto; padding-right: 4px; }
 .popup footer { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 10px 16px; }
+.popup .session-note {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  padding: 6px 10px; border-radius: 6px; background: var(--accent-soft); font-size: 12.5px;
+}
 
 /* ---- Options ---- */
 body.options { padding-inline: 16px; padding-block: 32px 64px; }
@@ -152,3 +156,7 @@ body.options { padding-inline: 16px; padding-block: 32px 64px; }
 .options .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .options .saved { color: var(--ok); font-size: 12.5px; }
 .options .filter { width: 100%; }
+.options .session-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.options .session-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); }
+.options .session-list li:first-child { border-top: 0; }
+.options .session-list .what { color: var(--muted); font-size: 12.5px; }

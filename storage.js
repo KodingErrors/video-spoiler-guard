@@ -57,6 +57,54 @@
     return site.builtIn ? setBuiltin(site.id, { ask }) : setCustomSite(site.domains[0], { ask });
   }
 
+  // ---- This browser session ----------------------------------------------
+  // "session:<domain>" -> { guard: true|false }: the dialog's "Don't show
+  // this again – for this session" choice for one site, kept in session
+  // storage so it is forgotten when the browser closes.
+
+  // Content scripts can read session storage once the service worker has
+  // allowed it; before that, the worker reads it for them.
+  async function sessionGetAll() {
+    try {
+      return await root.chrome.storage.session.get(null);
+    } catch {
+      try {
+        return (await root.chrome.runtime.sendMessage({ type: "vsg-session-get" })) || {};
+      } catch {
+        return {};
+      }
+    }
+  }
+
+  async function sessionSet(key, value) {
+    try {
+      await root.chrome.storage.session.set({ [key]: value });
+    } catch {
+      const ok = await root.chrome.runtime.sendMessage({ type: "vsg-session-set", key, value });
+      if (!ok) throw new Error("That choice couldn't be saved for this session.");
+    }
+  }
+
+  async function loadSessionChoices() {
+    const all = await sessionGetAll();
+    const choices = {};
+    for (const [key, value] of Object.entries(all)) {
+      if (!key.startsWith("session:") || !value || typeof value !== "object") continue;
+      choices[key.slice(8)] = { guard: value.guard !== false, at: typeof value.at === "number" ? value.at : 0 };
+    }
+    return choices;
+  }
+
+  function setSessionChoice(domain, guard) {
+    const clean = VSG.normalizeDomain(domain, { allowSingleLabel: true });
+    if (!clean) return Promise.reject(new Error("That isn't a web address."));
+    return sessionSet("session:" + clean, { guard: !!guard, at: Date.now() });
+  }
+
+  function clearSessionChoice(domain) {
+    return root.chrome.storage.session.remove("session:" + domain);
+  }
+
   async function getSalt() {
     const { salt } = await local().get("salt");
     if (typeof salt === "string" && salt) return salt;
@@ -78,6 +126,9 @@
     setSiteEnabled,
     setSiteHideProgress,
     setSiteAsk,
+    loadSessionChoices,
+    setSessionChoice,
+    clearSessionChoice,
     getSalt,
     resetSalt,
   });

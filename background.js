@@ -7,6 +7,28 @@ importScripts("lib.js");
 
 const CONTENT_SCRIPTS = ["lib.js", "storage.js", "content.js"];
 
+// "Don't show this again – for this session" choices live in session
+// storage, which is cleared when the browser closes. Content scripts can
+// only read it once the extension allows that, on every worker start.
+chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_AND_UNTRUSTED_CONTEXTS" }).catch(() => {});
+// Starting with the browser grants that access before restored tabs need it.
+chrome.runtime.onStartup.addListener(() => {});
+
+// Content scripts that run before access is granted read and write their
+// session choices through here instead.
+chrome.runtime.onMessage.addListener((message, sender, reply) => {
+  if (!message || !sender.tab) return false;
+  if (message.type === "vsg-session-get") {
+    chrome.storage.session.get(null).then(reply, () => reply({}));
+    return true;
+  }
+  if (message.type === "vsg-session-set" && typeof message.key === "string" && message.key.startsWith("session:")) {
+    chrome.storage.session.set({ [message.key]: message.value }).then(() => reply(true), () => reply(false));
+    return true;
+  }
+  return false;
+});
+
 chrome.runtime.onInstalled.addListener(async ({ reason }) => {
   const { salt } = await chrome.storage.local.get("salt");
   if (!salt) await chrome.storage.local.set({ salt: globalThis.VSG.randomSalt() });

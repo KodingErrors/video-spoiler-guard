@@ -18,38 +18,39 @@ Works in Chrome 116 or newer, and in other Chromium browsers (Edge, Brave, Opera
 
 ## Using it
 
-Click the toolbar button to open the popup:
+**The toolbar button** only deals with the site in the current tab:
 
-- **This site**: On, Off or Default for the site in the current tab. Default
-  removes the site's own entry, so a parent entry (for example YouTube, for
-  gaming.youtube.com) or auto-detect applies instead; the button says which.
-  When the site is on, you can also choose whether it shows the dialog.
-- **Auto-detect all video playbacks and automatically apply**: when a video
-  starts playing on any site that isn't switched off, the guard turns on and a
-  dialog appears in the page. Choose **Cancel** to see the real length for
-  that video, or let it close by itself to keep the guard on. Tick **Remember
-  my choice** to stop being asked on that site (Keep) or to switch the site
-  off (Cancel). With auto-detect off, only the sites switched on in the list
-  are guarded, with no dialog.
+- **Hide video lengths on this site**: switch it on or off for this site.
+- **Show the dialog when a video starts**: whether this site asks first.
+- **Open dashboard**: everything else.
+
+**The dialog.** With auto-detect on, a dialog appears in the page when a video
+starts playing: the length is already hidden, and **Cancel** shows the real
+one for that video (or let it close by itself to keep the guard). Two options
+remember the button you press so the dialog stops appearing:
+
+- **Don't show this again – for this session**: for this website, until you
+  close the browser.
+- **Don't show this again – for this website**: for this website, from now on.
+  Keep hidden means it is guarded without asking; Cancel switches it off.
+
+**The dashboard** (toolbar button → Open dashboard) holds everything else:
+
+- **Auto-detect all video playbacks and automatically apply**: guards every
+  video that starts playing on any site that isn't switched off, with the
+  dialog. When it's off, only the sites switched on are guarded, silently.
+- **This browser session**: the session choices you made in the dialog, with
+  a way to forget them.
 - **Sites**: a switch for each built-in site (YouTube, Twitch, Kick, Vimeo,
   Dailymotion, Rumble, Netflix, Prime Video, HBO Max, Hulu, Crunchyroll,
   Paramount+, Peacock, Facebook, X, Reddit, TikTok, Bilibili) and every site
-  you added. Sites that are off are never touched. A site's setting also
-  covers videos embedded in its pages, so switching a blog off also leaves its
-  YouTube embeds alone.
-- **Add a site**: type a domain such as `example.com` or paste a link to a video
-  page. Subdomains are included.
-
-**All settings** opens the options page, where you can also:
-
-- change the range of fake time (default 2 to 6 hours),
-- pick new fake lengths for every video,
-- set how long the dialog waits before closing itself, and ignore short videos
-  (default: under 1 minute, which skips most ads and previews),
-- choose per site whether the dialog appears,
-- hide the progress bar per site, since its position still reflects the real
-  length,
-- give an added site CSS selectors for its duration label or progress bar, for
+  you added, each with its dialog and progress-bar options. A site's setting
+  also covers videos embedded in its pages.
+- **Add a site**: a domain such as `example.com` or a link to a video page.
+  Subdomains are included.
+- The range of fake time (default 2 to 6 hours), new fake lengths for every
+  video, how long the dialog waits, and which short videos to ignore.
+- CSS selectors for an added site's duration label or progress bar, for
   players the automatic detection misses.
 
 The toolbar button shows **ON** on tabs where a video is being guarded.

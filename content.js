@@ -59,6 +59,7 @@
   const TOP_HOST = IS_TOP ? FRAME_HOST : hostFromOrigin(ancestors[ancestors.length - 1]) || FRAME_HOST;
 
   let settings = null;
+  let sessionChoices = {};
   let salt = "";
   let decision = { mode: "none", site: null, listed: null };
   let lastHref = location.href;
@@ -70,6 +71,12 @@
   // covers a YouTube embed in it, and "On" covers an unlisted player frame.
   // An embed whose own site is listed follows its own entry otherwise.
   function computeDecision() {
+    // A "Don't show this again – for this session" choice for the page the
+    // user is on replaces the site's setting until the browser closes.
+    return VSG.applySessionChoice(siteDecision(), VSG.sessionChoiceFor(sessionChoices, TOP_HOST));
+  }
+
+  function siteDecision() {
     if (!settings || !FRAME_HOST) return { mode: "none", site: null, listed: null };
     const own = VSG.decide(settings, FRAME_HOST);
     const ownListed = own.mode === "on" || own.mode === "off" ? own.site : null;
@@ -234,9 +241,10 @@
   // ---- Settings ------------------------------------------------------------
 
   async function loadState() {
-    const [loaded, s] = await Promise.all([Store.loadSettings(), Store.getSalt()]);
+    const [loaded, s, session] = await Promise.all([Store.loadSettings(), Store.getSalt(), Store.loadSessionChoices()]);
     settings = loaded;
     salt = s;
+    sessionChoices = session;
     decision = computeDecision();
   }
 
@@ -1218,24 +1226,34 @@
             cancelledKeys.add(key);
             setStatus(record, "cancelled");
           }
-          if (choice.remember) remember(choice.cancel);
+          remember(choice);
         }
         showNextPrompt();
       });
     }
   }
 
-  // "Remember my choice": on a listed site, Keep stops the dialog there and
-  // Cancel switches the site off; on an unlisted site it adds the site.
-  function remember(cancelled) {
-    const listed = decision.listed;
-    let write;
-    if (listed) write = cancelled ? Store.setSiteEnabled(listed, false) : Store.setSiteAsk(listed, false);
-    // Keep the protection the site had while it was auto-detected.
-    else write = Store.setCustomSite(TOP_HOST, { enabled: !cancelled, ask: false, hideProgress: !!(decision.site && decision.site.hideProgress) });
-    write.catch(() => {
-      // Storage refused the write (quota); the dialog is already gone.
-    });
+  // "Don't show this again": the button pressed (Keep hidden or Cancel) is
+  // remembered for this website, for this browser session or permanently,
+  // and the dialog stops appearing there.
+  //   for this website: on a listed site, Keep stops the dialog and Cancel
+  //     switches the site off; an unlisted site is added either way.
+  //   for this session: the same, kept in session storage and forgotten
+  //     when the browser closes.
+  function remember(choice) {
+    const writes = [];
+    if (choice.website) {
+      const listed = decision.listed;
+      if (listed) writes.push(choice.cancel ? Store.setSiteEnabled(listed, false) : Store.setSiteAsk(listed, false));
+      // Keep the protection the site had while it was auto-detected.
+      else writes.push(Store.setCustomSite(TOP_HOST, { enabled: !choice.cancel, ask: false, hideProgress: !!(decision.site && decision.site.hideProgress) }));
+    }
+    if (choice.session) writes.push(Store.setSessionChoice(TOP_HOST, !choice.cancel));
+    for (const write of writes) {
+      write.catch(() => {
+        // Storage refused the write (quota); the dialog is already gone.
+      });
+    }
   }
 
   function rememberLabel() {
@@ -1263,8 +1281,9 @@
     dialog::backdrop { background: rgba(10, 12, 18, .35); }
     h2 { margin: 0 0 6px; font-size: 16px; line-height: 1.3; font-weight: 700; }
     p { margin: 0 0 14px; color: var(--muted); }
-    label { display: flex; gap: 8px; align-items: center; margin: 0 0 16px; color: var(--fg); cursor: pointer; }
-    input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+    .options { display: flex; flex-direction: column; gap: 8px; margin: 0 0 16px; }
+    label { display: flex; gap: 8px; align-items: flex-start; color: var(--fg); cursor: pointer; }
+    input { flex: none; width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--accent); }
     .row { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
     button { font: inherit; font-weight: 600; min-height: 36px; padding: 6px 14px; border-radius: 6px; cursor: pointer; }
     .cancel { background: transparent; color: var(--fg); border: 1px solid var(--line); }
@@ -1274,6 +1293,7 @@
       dialog { padding: 10px 12px; }
       h2 { font-size: 14px; margin: 0 0 2px; }
       p, label { font-size: 12.5px; line-height: 1.35; margin: 0 0 6px; }
+      .options { gap: 2px; margin: 0 0 6px; }
       button { min-height: 28px; padding: 2px 10px; font-size: 12.5px; }
     }
   `;
@@ -1304,11 +1324,19 @@
     body.textContent = `The player now shows this video's length plus a random ${VSG.describeHours(settings.minHours, settings.maxHours)}. Cancel to see the real length.`;
 
     const where = rememberLabel();
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    const remember = document.createElement("label");
-    remember.append(box, document.createTextNode(`Remember my choice for ${where}`));
-    remember.hidden = !where;
+    const option = (text) => {
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      const label = document.createElement("label");
+      label.append(box, document.createTextNode(text));
+      label.hidden = !where;
+      return { box, label };
+    };
+    const forSession = option("Don't show this again \u2013 for this session");
+    const forWebsite = option(`Don't show this again \u2013 for this website (${where})`);
+    const options = document.createElement("div");
+    options.className = "options";
+    options.append(forSession.label, forWebsite.label);
 
     const row = document.createElement("div");
     row.className = "row";
@@ -1321,7 +1349,7 @@
     keep.className = "keep";
     row.append(cancel, keep);
 
-    dialog.append(title, body, remember, row);
+    dialog.append(title, body, options, row);
     shadow.append(style, dialog);
     document.documentElement.appendChild(host);
 
@@ -1345,7 +1373,8 @@
         // already closed
       }
       host.remove();
-      done({ cancel: cancelled, remember: !interrupted && box.checked && !!where, interrupted });
+      const chosen = !interrupted && !!where;
+      done({ cancel: cancelled, session: chosen && forSession.box.checked, website: chosen && forWebsite.box.checked, interrupted });
     };
     const startCountdown = () => {
       timer = setInterval(() => {
@@ -1453,21 +1482,36 @@
       evaluateAll();
       return;
     }
+    if (area === "session") {
+      if (!Object.keys(changes).some((k) => k.startsWith("session:"))) return;
+      Store.loadSessionChoices()
+        .then((choices) => {
+          sessionChoices = choices;
+          redecide();
+        })
+        .catch(() => {});
+      return;
+    }
     if (area !== "sync") return;
     Store.loadSettings()
       .then((loaded) => {
-        const wasActive = active();
         settings = loaded;
-        decision = computeDecision();
-        if (!wasActive && active()) {
-          discoverLight();
-          resetScanBackoff();
-          startDeepScan();
-        }
-        evaluateAll();
-        startTicking();
+        redecide();
       })
       .catch(() => {});
+  }
+
+  // Applies a change of settings or session choices to the page.
+  function redecide() {
+    const wasActive = active();
+    decision = computeDecision();
+    if (!wasActive && active()) {
+      discoverLight();
+      resetScanBackoff();
+      startDeepScan();
+    }
+    evaluateAll();
+    startTicking();
   }
 
   function onPageHide() {

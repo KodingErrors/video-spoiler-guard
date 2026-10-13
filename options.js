@@ -9,6 +9,7 @@
   const $ = (id) => document.getElementById(id);
 
   let settings = await Store.loadSettings();
+  let sessionChoices = await Store.loadSessionChoices();
 
   // ---- Numbers ---------------------------------------------------------
 
@@ -219,7 +220,38 @@
     }
   }
 
+  // ---- This browser session -------------------------------------------
+
+  function renderSession() {
+    const list = $("session-list");
+    const domains = Object.keys(sessionChoices).sort();
+    list.replaceChildren(
+      ...domains.map((domain) =>
+        el(
+          "li",
+          { "data-domain": domain },
+          el("span", null, el("span", { class: "site-name", text: domain }), " ",
+            el("span", { class: "what", text: sessionChoices[domain].guard ? "Hidden without the dialog" : "Left alone" })),
+          el("button", {
+            type: "button",
+            class: "link",
+            text: "Forget",
+            "aria-label": `Forget the session choice for ${domain}`,
+            onclick: () => Store.clearSessionChoice(domain),
+          }),
+        ),
+      ),
+    );
+    if (!domains.length) list.append(el("li", { class: "hint", text: "No choices yet for this session." }));
+    $("session-clear-all").disabled = !domains.length;
+  }
+
+  $("session-clear-all").addEventListener("click", () => {
+    for (const domain of Object.keys(sessionChoices)) Store.clearSessionChoice(domain);
+  });
+
   function render() {
+    renderSession();
     $("auto-detect").checked = settings.autoDetect;
     $("auto-hide-progress").checked = settings.autoHideProgress;
     renderNumbers();
@@ -255,6 +287,11 @@
   });
 
   chrome.storage.onChanged.addListener(async (changes, area) => {
+    if (area === "session") {
+      sessionChoices = await Store.loadSessionChoices();
+      renderSession();
+      return;
+    }
     if (area !== "sync") return;
     settings = await Store.loadSettings();
     render();

@@ -142,11 +142,22 @@ async function main() {
   const prompt = (page) => page.locator("video-spoiler-guard-prompt");
   const waitPrompt = (page) => page.waitForSelector("video-spoiler-guard-prompt", { state: "attached", timeout: 6000 });
   const waitNoPrompt = (page) => page.waitForSelector("video-spoiler-guard-prompt", { state: "detached", timeout: 4000 });
-  // Focus starts on the dialog itself: Tab reaches Remember, then Cancel, then Keep.
-  const clickCancel = async (page) => {
-    await page.keyboard.press("Tab");
-    await page.keyboard.press("Tab");
-    await page.keyboard.press("Enter");
+  // Focus starts on the dialog itself. Tab order: "Don't show this again –
+  // for this session", "– for this website", Cancel, Keep hidden.
+  const press = async (page, ...keys) => {
+    for (const key of keys) await page.keyboard.press(key);
+  };
+  const clickCancel = (page) => press(page, "Tab", "Tab", "Tab", "Enter");
+  const getSession = () => optionsPage.evaluate(() => chrome.storage.session.get(null));
+  // The popup reads the active tab's address; point it at a page instead.
+  const openPopupFor = async (url) => {
+    const popup = await context.newPage();
+    await popup.addInitScript((u) => {
+      chrome.tabs.query = async () => [{ url: u }];
+    }, url);
+    await popup.goto(`chrome-extension://${extId}/popup.html`);
+    await popup.waitForTimeout(300);
+    return popup;
   };
   const ready = (page, sel) => page.waitForFunction((s) => (document.querySelector(s) || {}).textContent, sel, { timeout: 10000 });
 
@@ -171,13 +182,9 @@ async function main() {
     await yt.waitForTimeout(300);
     assert.equal(await yt.textContent(".ytp-time-duration"), firstShown);
   });
-  await check("YouTube: Remember + Keep stops the dialog on that site", async () => {
+  await check("YouTube: 'Don't show this again – for this website' + Keep stops the dialog there", async () => {
     await waitPrompt(yt);
-    await yt.keyboard.press("Tab"); // Remember
-    await yt.keyboard.press("Space");
-    await yt.keyboard.press("Tab");
-    await yt.keyboard.press("Tab"); // Keep
-    await yt.keyboard.press("Enter");
+    await press(yt, "Tab", "Tab", "Space", "Tab", "Tab", "Enter"); // tick "for this website", then Keep hidden
     await yt.waitForTimeout(300);
     assert.equal((await getStorage())["builtin:youtube"]?.ask, false);
     await yt.reload();
@@ -278,14 +285,43 @@ async function main() {
     await generic.waitForTimeout(2500);
     assert.match(await generic.textContent("[data-combined]"), /\/ 1:02:05$/, "the cancelled video stays real");
   });
-  await check("Auto-detect: Remember + Cancel switches the site off", async () => {
+  await check("Auto-detect: 'for this session' + Keep hides lengths without the dialog until the browser closes", async () => {
+    await generic.reload();
+    await waitPrompt(generic);
+    await press(generic, "Tab", "Space", "Tab", "Tab", "Tab", "Enter"); // tick "for this session", then Keep hidden
+    await generic.waitForTimeout(400);
+    assert.deepEqual((await getSession())["session:videos.example.org"]?.guard, true);
+    assert.equal((await getStorage())["site:videos.example.org"], undefined, "nothing saved permanently");
+    await generic.reload();
+    await ready(generic, "[data-combined]");
+    await generic.waitForTimeout(1500);
+    assert.equal(await prompt(generic).count(), 0);
+    assert.ok(isFake((await generic.textContent("[data-combined]")).split("/")[1], 3725));
+    // The dashboard lists it and can forget it.
+    await optionsPage.reload();
+    await optionsPage.waitForSelector('#session-list li[data-domain="videos.example.org"]');
+    await optionsPage.click('#session-list li[data-domain="videos.example.org"] button');
+    await optionsPage.waitForTimeout(300);
+    assert.equal((await getSession())["session:videos.example.org"], undefined);
+  });
+  await check("Auto-detect: 'for this session' + Cancel leaves the site alone for the session", async () => {
+    await generic.reload();
+    await waitPrompt(generic);
+    await press(generic, "Tab", "Space", "Tab", "Tab", "Enter"); // tick "for this session", then Cancel
+    await generic.waitForTimeout(400);
+    assert.equal((await getSession())["session:videos.example.org"]?.guard, false);
+    await generic.reload();
+    await ready(generic, "[data-combined]");
+    await generic.waitForTimeout(1500);
+    assert.equal(await prompt(generic).count(), 0);
+    assert.match(await generic.textContent("[data-combined]"), /\/ 1:02:05$/);
+    await optionsPage.evaluate(() => chrome.storage.session.remove("session:videos.example.org"));
+  });
+  await check("Auto-detect: 'for this website' + Cancel switches the site off", async () => {
     await setStorage({ confirmSeconds: 0 });
     await generic.reload();
     await waitPrompt(generic);
-    await generic.keyboard.press("Tab"); // Remember
-    await generic.keyboard.press("Space");
-    await generic.keyboard.press("Tab"); // Cancel
-    await generic.keyboard.press("Enter");
+    await press(generic, "Tab", "Tab", "Space", "Tab", "Enter"); // tick "for this website", then Cancel
     await generic.waitForTimeout(400);
     assert.equal((await getStorage())["site:videos.example.org"]?.enabled, false);
     await generic.reload();
@@ -340,29 +376,57 @@ async function main() {
   });
 
   // ---- 6. Popup and options ----
-  await check("Popup lists built-in sites and adds a site", async () => {
-    const popup = await context.newPage();
-    await popup.goto(`chrome-extension://${extId}/popup.html`);
-    await popup.waitForSelector("#sites li");
-    const names = await popup.locator("#sites .site-name").allTextContents();
-    assert.ok(names.some((n) => n.startsWith("YouTube")) && names.some((n) => n.startsWith("Twitch")), names.join());
-    await popup.fill("#add-domain", "https://www.Some-Video-Site.com/watch/9");
-    await popup.click("#add-form button");
-    await popup.waitForSelector('#sites li[data-key="site:some-video-site.com"]');
-    await popup.fill("#add-domain", "nonsense");
-    await popup.click("#add-form button");
-    assert.match(await popup.textContent("#add-error"), /example\.com/);
+  await check("Popup shows only the site you're on, and switches it", async () => {
+    const popup = await openPopupFor("https://www.twitch.tv/videos/123456789");
+    assert.equal(await popup.locator("#sites, #add-form, #auto-detect").count(), 0, "no site list, add box or global switches");
+    assert.match(await popup.textContent("#here-host"), /^Twitch \(twitch\.tv\)$/);
+    assert.equal(await popup.isChecked("#here-toggle"), true);
+    await popup.click("#here-toggle");
+    await popup.waitForTimeout(300);
+    assert.equal((await getStorage())["builtin:twitch"]?.enabled, false);
+    assert.equal(await popup.textContent("#here-pill"), "Off");
+    await popup.click("#here-toggle");
+    await popup.waitForTimeout(300);
+    assert.equal((await getStorage())["builtin:twitch"]?.enabled, true);
     await popup.close();
   });
-  await check("Popup keeps keyboard focus on a switch after toggling it", async () => {
-    const popup = await context.newPage();
-    await popup.goto(`chrome-extension://${extId}/popup.html`);
-    await popup.focus("#site-builtin_3atwitch");
-    await popup.keyboard.press("Space");
+  await check("Popup switches an unlisted site off and on", async () => {
+    const popup = await openPopupFor("https://clips.example.net/watch/1");
+    assert.equal(await popup.isChecked("#here-toggle"), true, "auto-detect covers it");
+    await popup.click("#here-toggle");
     await popup.waitForTimeout(300);
-    assert.equal(await popup.evaluate(() => document.activeElement.id), "site-builtin_3atwitch");
-    await popup.keyboard.press("Space");
+    assert.equal((await getStorage())["site:clips.example.net"]?.enabled, false);
+    await removeStorage("site:clips.example.net");
     await popup.close();
+  });
+  await check("Popup opens the dashboard", async () => {
+    // Chrome focuses an already open dashboard instead of opening another,
+    // so check the call itself.
+    const popup = await context.newPage();
+    await popup.addInitScript(() => {
+      chrome.tabs.query = async () => [{ url: "https://www.youtube.com/watch?v=abcDEF12345" }];
+      window.opened = 0;
+      chrome.runtime.openOptionsPage = () => {
+        window.opened++;
+        return Promise.resolve();
+      };
+    });
+    await popup.goto(`chrome-extension://${extId}/popup.html`);
+    await popup.click("#open-dashboard");
+    assert.equal(await popup.evaluate(() => window.opened), 1);
+    assert.match(await optionsPage.title(), /dashboard/i);
+    await popup.close();
+  });
+  await check("Dashboard lists built-in sites and adds a site", async () => {
+    await optionsPage.reload();
+    const names = await optionsPage.locator("#sites .site-name").allTextContents();
+    assert.ok(names.some((n) => n.startsWith("YouTube")) && names.some((n) => n.startsWith("Twitch")), names.join());
+    await optionsPage.fill("#add-domain", "https://www.Some-Video-Site.com/watch/9");
+    await optionsPage.click("#add-form button[type=submit]");
+    await optionsPage.waitForSelector('#sites li[data-key="site:some-video-site.com"]');
+    await optionsPage.fill("#add-domain", "nonsense");
+    await optionsPage.click("#add-form button[type=submit]");
+    assert.match(await optionsPage.textContent("#add-error"), /example\.com/);
   });
   await check("Options page toggles, asks and removes an added site", async () => {
     await optionsPage.reload();

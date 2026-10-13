@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Video Spoiler Guard settings</title>
+  <title>Video Spoiler Guard dashboard</title>
   <link rel="stylesheet" href="ui.css">
 </head>
 <body class="options">
@@ -11,8 +11,8 @@
     <header class="page-head">
       <img src="icons/icon48.png" alt="" width="36" height="36">
       <div>
-        <h1>Video Spoiler Guard</h1>
-        <p class="hint">Adds a random amount of fake time to the length video players show, so you can't tell how close the end is.</p>
+        <h1>Video Spoiler Guard dashboard</h1>
+        <p class="hint">Every site and setting in one place. The toolbar button only changes the site you're on.</p>
       </div>
     </header>
 
@@ -62,6 +62,15 @@
         <span class="saved" id="time-status" role="status"></span>
       </div>
       <p class="error" id="time-error" role="alert"></p>
+    </section>
+
+    <section class="card" aria-labelledby="session-title">
+      <h2 id="session-title">This browser session</h2>
+      <p class="hint">Choices made with "Don't show this again – for this session" in the dialog. They are forgotten when you close the browser.</p>
+      <ul class="session-list" id="session-list"></ul>
+      <div class="actions">
+        <button class="btn secondary" type="button" id="session-clear-all">Forget all session choices</button>
+      </div>
     </section>
 
     <section class="card" aria-labelledby="sites-title">

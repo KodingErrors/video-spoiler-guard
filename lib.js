@@ -317,6 +317,30 @@
     return { mode: "none", site: null };
   }
 
+  // The "Don't show this again – for this session" choice for this host, if
+  // any. `choices` maps a domain to { guard }.
+  function sessionChoiceFor(choices, hostname) {
+    let best = null;
+    let bestLength = -1;
+    for (const [domain, choice] of Object.entries(choices || {})) {
+      if (hostMatches(hostname, domain) && domain.length > bestLength) {
+        best = choice;
+        bestLength = domain.length;
+      }
+    }
+    return best;
+  }
+
+  // A session choice replaces the site's setting until the browser closes:
+  // Keep hidden guards without the dialog, Cancel leaves videos alone. It
+  // never turns on a site that is switched off, or an unlisted site while
+  // auto-detect is off.
+  function applySessionChoice(decision, choice) {
+    if (!choice || (decision.mode !== "on" && decision.mode !== "auto")) return decision;
+    if (!choice.guard) return { ...decision, mode: "off", session: true };
+    return { ...decision, mode: "on", site: { ...(decision.site || AUTO_SITE), ask: false }, session: true };
+  }
+
   // ---- Clock text ---------------------------------------------------------
 
   const two = (n) => String(n).padStart(2, "0");
@@ -608,6 +632,8 @@
     hostMatches,
     findSite,
     decide,
+    sessionChoiceFor,
+    applySessionChoice,
     formatClock,
     rewriteClockText,
     rewriteClockDetailed,

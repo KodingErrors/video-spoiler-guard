@@ -313,7 +313,7 @@ async function main() {
   await check("Keys pressed in the dialog don't reach the page's shortcuts", async () => {
     const page = await open("https://keys.example.org/v");
     await page.waitForSelector("video-spoiler-guard-prompt", { state: "attached", timeout: 6000 });
-    await page.keyboard.press("Tab"); // Remember
+    await page.keyboard.press("Tab"); // "for this session"
     await page.keyboard.press("Space");
     assert.equal(await page.evaluate(() => document.querySelector("video").paused), false, "Space paused the video");
     await page.keyboard.press("Escape");
@@ -367,10 +367,7 @@ async function main() {
   await check("Remember works on a single-word host such as jellyfin", async () => {
     const page = await open("http://jellyfin/web/");
     await page.waitForSelector("video-spoiler-guard-prompt", { state: "attached", timeout: 6000 });
-    await page.keyboard.press("Tab"); // Remember
-    await page.keyboard.press("Space");
-    await page.keyboard.press("Tab"); // Cancel
-    await page.keyboard.press("Enter");
+    for (const key of ["Tab", "Tab", "Space", "Tab", "Enter"]) await page.keyboard.press(key); // "for this website", then Cancel
     await page.waitForTimeout(400);
     assert.equal((await getStorage())["site:jellyfin"]?.enabled, false);
     await removeStorage("site:jellyfin");
@@ -381,11 +378,7 @@ async function main() {
     await setStorage({ autoHideProgress: true });
     const page = await open("https://hideprog.example.org/v");
     await page.waitForSelector("video-spoiler-guard-prompt", { state: "attached", timeout: 6000 });
-    await page.keyboard.press("Tab");
-    await page.keyboard.press("Space");
-    await page.keyboard.press("Tab");
-    await page.keyboard.press("Tab"); // Keep
-    await page.keyboard.press("Enter");
+    for (const key of ["Tab", "Tab", "Space", "Tab", "Tab", "Enter"]) await page.keyboard.press(key); // "for this website", then Keep hidden
     await page.waitForTimeout(600);
     assert.equal((await getStorage())["site:hideprog.example.org"]?.hideProgress, true);
     assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector("[role=slider]")).opacity), "0");
@@ -411,17 +404,16 @@ async function main() {
     await page.close();
   });
 
-  await check("Popup: adding a subdomain of a built-in site says it's covered", async () => {
-    const popup = await open(`chrome-extension://${extId}/popup.html`);
-    await popup.fill("#add-domain", "https://m.youtube.com/watch?v=abcDEF12345");
-    await popup.click("#add-form button");
-    await popup.waitForTimeout(300);
-    assert.match(await popup.textContent("#add-error"), /YouTube already covers m\.youtube\.com/);
+  await check("Dashboard: adding a subdomain of a built-in site says it's covered", async () => {
+    await optionsPage.reload();
+    await optionsPage.fill("#add-domain", "https://m.youtube.com/watch?v=abcDEF12345");
+    await optionsPage.click("#add-form button[type=submit]");
+    await optionsPage.waitForTimeout(300);
+    assert.match(await optionsPage.textContent("#add-error"), /YouTube already covers m\.youtube\.com/);
     assert.equal((await getStorage())["site:m.youtube.com"], undefined);
-    await popup.close();
   });
 
-  await check("Popup: Default names the entry that will apply", async () => {
+  await check("Popup: a subdomain entry is named as what applies, and switches on", async () => {
     await setStorage({ "site:gaming.youtube.com": { enabled: false } });
     const popup = await context.newPage();
     await popup.addInitScript(() => {
@@ -429,7 +421,11 @@ async function main() {
     });
     await popup.goto(`chrome-extension://${extId}/popup.html`);
     await popup.waitForTimeout(400);
-    assert.equal(await popup.textContent("#here-auto-label"), "Default (YouTube: on)");
+    assert.equal(await popup.textContent("#here-host"), "gaming.youtube.com");
+    assert.equal(await popup.isChecked("#here-toggle"), false);
+    await popup.click("#here-toggle");
+    await popup.waitForTimeout(300);
+    assert.equal((await getStorage())["site:gaming.youtube.com"]?.enabled, true);
     await removeStorage("site:gaming.youtube.com");
     await popup.close();
   });
